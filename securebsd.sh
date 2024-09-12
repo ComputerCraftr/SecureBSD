@@ -111,17 +111,22 @@ update_and_install_packages() {
 # Function to configure SSH security
 configure_ssh() {
   echo "Configuring SSH security..."
-  echo "Disabling root login and password-based authentication, enabling public key authentication."
+  echo "Disabling root login, password-based authentication, and enforcing public key authentication."
+
   sshd_config="/etc/ssh/sshd_config"
   sed -i '' 's/#PermitRootLogin yes/PermitRootLogin no/' "$sshd_config"
   sed -i '' 's/#PasswordAuthentication yes/PasswordAuthentication no/' "$sshd_config"
-  sed -i '' 's/#PubkeyAuthentication no/PubkeyAuthentication yes/' "$sshd_config"
   sed -i '' 's/#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/' "$sshd_config"
-  sed -i '' 's/#UsePAM no/UsePAM yes/' "$sshd_config"
+  sed -i '' 's/#PubkeyAuthentication no/PubkeyAuthentication yes/' "$sshd_config"
+
+  # Explicitly disable PAM to avoid unintended password authentication
+  sed -i '' 's/#UsePAM yes/UsePAM no/' "$sshd_config"
+
   sed -i '' 's/#Port 22/Port '"$ssh_port"'/' "$sshd_config"
   echo "AllowUsers $allowed_user" >>"$sshd_config"
+
   service sshd restart
-  echo "SSH configured to use port $ssh_port, with root login disabled, password authentication disabled, and public key authentication enabled."
+  echo "SSH configured to use port $ssh_port, with root login and password authentication disabled, and public key authentication enforced."
 
   # Generate SSH key if not already existing (switch to ed25519 for stronger security)
   if [ ! -f /home/"$allowed_user"/.ssh/id_ed25519 ]; then
