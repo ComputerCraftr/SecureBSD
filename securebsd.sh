@@ -291,8 +291,14 @@ EOF
 # Function to lock down sensitive files and restrict cron/at to root only
 lock_down_system() {
   echo "Locking down critical system files and restricting cron and at jobs to root..."
-  chflags schg /etc/passwd /etc/group /etc/hosts /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
+
+  # Adjust file permissions first
   chmod o= /etc/ftpusers /etc/group /etc/hosts /etc/login.conf /etc/rc.conf /etc/ssh/sshd_config /etc/sysctl.conf /etc/crontab /usr/bin/at /var/log
+
+  # Apply immutable flag to lock down system files
+  chflags schg /etc/passwd /etc/group /etc/hosts /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
+
+  # Restrict cron and at to root only
   echo "root" | tee /var/cron/allow /var/at/at.allow >/dev/null
   echo "System files locked down and cron/at restricted to root only."
 }
