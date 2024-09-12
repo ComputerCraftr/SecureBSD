@@ -98,13 +98,17 @@ backup_configs() {
   echo "Backup completed. Files saved in $backup_dir."
 }
 
-# Function to update FreeBSD and install necessary packages (sudo, fail2ban)
+# Function to update FreeBSD and install necessary packages (sudo, py311-fail2ban)
 update_and_install_packages() {
   echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban)..."
+
   freebsd-update fetch install
   pkg update
   pkg upgrade -y
-  pkg install -y sudo fail2ban
+
+  # Install sudo and the correct fail2ban package (py311-fail2ban)
+  pkg install -y sudo py311-fail2ban
+
   echo "System updated and packages installed."
 }
 
