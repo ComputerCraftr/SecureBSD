@@ -288,19 +288,13 @@ EOF
   echo "PF firewall configured to enable at next reboot."
 }
 
-# Function to lock down sensitive files and restrict cron/at to root only
-lock_down_system() {
-  echo "Locking down critical system files and restricting cron and at jobs to root..."
-
-  # Adjust file permissions for sensitive system files
-  chmod o= /etc/ftpusers /etc/hosts /etc/login.conf /etc/rc.conf /etc/ssh/sshd_config /etc/sysctl.conf /etc/crontab /usr/bin/at /var/log
-
-  # Apply immutable flag to non-user-modifiable system files
-  chflags schg /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
-
-  # Restrict cron and at to root only
-  echo "root" | tee /var/cron/allow /var/at/at.allow >/dev/null
-  echo "System files locked down and cron/at restricted to root only."
+# Function to secure syslog and configure /tmp cleanup at startup
+secure_syslog_and_tmp() {
+  echo "Securing syslog and configuring /tmp cleanup at startup..."
+  sysrc syslogd_flags="-ss"
+  service syslogd restart
+  echo 'clear_tmp_enable="YES"' >>/etc/rc.conf
+  echo "Syslog secured and /tmp will be cleared on startup."
 }
 
 # Function to automate weekly FreeBSD and pkg updates via cron, avoiding duplicates
@@ -324,13 +318,19 @@ configure_cron_updates() {
   fi
 }
 
-# Function to disable syslogd network socket and clean /tmp on startup
-secure_syslog_and_tmp() {
-  echo "Securing syslog and configuring /tmp cleanup at startup..."
-  sysrc syslogd_flags="-ss"
-  service syslogd restart
-  echo 'clear_tmp_enable="YES"' >>/etc/rc.conf
-  echo "Syslog secured and /tmp will be cleared on startup."
+# Function to lock down sensitive files and restrict cron/at to root only (should be last)
+lock_down_system() {
+  echo "Locking down critical system files and restricting cron and at jobs to root..."
+
+  # Adjust file permissions for sensitive system files
+  chmod o= /etc/ftpusers /etc/hosts /etc/login.conf /etc/rc.conf /etc/ssh/sshd_config /etc/sysctl.conf /etc/crontab /usr/bin/at /var/log
+
+  # Apply immutable flag to non-user-modifiable system files
+  chflags schg /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
+
+  # Restrict cron and at to root only
+  echo "root" | tee /var/cron/allow /var/at/at.allow >/dev/null
+  echo "System files locked down and cron/at restricted to root only."
 }
 
 # Function to log the hardening process and provide auditing
@@ -352,9 +352,12 @@ main() {
   harden_loader_conf
   configure_password_and_umask
   configure_pf
-  lock_down_system
-  configure_cron_updates
   secure_syslog_and_tmp
+  configure_cron_updates
+
+  # Lockdown must happen last after all changes are applied
+  lock_down_system
+
   echo "Security hardening complete. Please review configurations and reboot to apply all changes."
 }
 
