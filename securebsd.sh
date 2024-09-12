@@ -125,8 +125,7 @@ configure_ssh() {
   sed -i '' 's/#Port 22/Port '"$ssh_port"'/' "$sshd_config"
   echo "AllowUsers $allowed_user" >>"$sshd_config"
 
-  service sshd restart
-  echo "SSH configured to use port $ssh_port, with root login and password authentication disabled, and public key authentication enforced."
+  echo "SSH key generation and configuration completed. You must manually copy the SSH key to your local machine before restarting SSH."
 
   # Generate SSH key if not already existing (switch to ed25519 for stronger security)
   if [ ! -f /home/"$allowed_user"/.ssh/id_ed25519 ]; then
@@ -140,6 +139,10 @@ configure_ssh() {
   sudo -u "$allowed_user" cat /home/"$allowed_user"/.ssh/id_ed25519.pub | sudo tee -a /home/"$allowed_user"/.ssh/authorized_keys >/dev/null
   chmod 600 /home/"$allowed_user"/.ssh/authorized_keys
   echo "Public key authentication enabled for $allowed_user."
+
+  echo "You MUST copy the key to your local machine before restarting SSH."
+  echo "Do not restart SSH until the key has been securely transferred."
+  echo "Once you have copied the key, you can manually restart SSH using: service sshd restart"
 }
 
 # Function to configure sudo for wheel group and add the allowed user to the group
@@ -153,9 +156,7 @@ configure_sudo() {
 # Function to configure fail2ban for SSH protection
 configure_fail2ban() {
   echo "Configuring Fail2Ban to protect SSH from brute-force attacks..."
-  sysrc fail2ban_enable="YES"
 
-  # Customizing ban time for IPv4 and IPv6 (3600 seconds = 1 hour)
   cat <<EOF >/usr/local/etc/fail2ban/jail.local
 [sshd]
 enabled = true
@@ -167,8 +168,9 @@ bantime = 3600  # 1 hour ban
 findtime = 600  # 10 minutes window to track failed attempts
 EOF
 
-  service fail2ban start
-  echo "Fail2Ban configured to ban IP addresses for 1 hour after 3 failed SSH login attempts."
+  # Enable Fail2ban at next boot
+  sysrc fail2ban_enable="YES"
+  echo "Fail2Ban configured to enable at next reboot."
 }
 
 # Function to harden system kernel with sysctl settings
@@ -258,6 +260,7 @@ configure_password_and_umask() {
 # Function to configure PF firewall for IPv4/IPv6 and SSH restrictions
 configure_pf() {
   echo "Configuring the PF firewall to allow SSH access only for the specified IPs..."
+
   if [ "$admin_ips" = "any" ]; then
     # Allow SSH from any IP (discouraged)
     pf_rules="pass in proto tcp to any port $ssh_port keep state"
@@ -276,10 +279,9 @@ $pf_rules
 block return in log all
 EOF
 
-  service pf enable
-  pfctl -f /etc/pf.conf
-  service pf restart
-  echo "PF firewall configured and enabled."
+  # Enable PF at next boot to avoid locking out the current SSH session
+  sysrc pf_enable="YES"
+  echo "PF firewall configured to enable at next reboot."
 }
 
 # Function to lock down sensitive files and restrict cron/at to root only
