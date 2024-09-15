@@ -35,6 +35,18 @@ validate_password_expiration() {
   fi
 }
 
+# Function to check and clear immutable flags on system files
+clear_immutable_flags() {
+  echo "Clearing immutable flags on system files for updates..."
+  chflags noschg /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
+}
+
+# Function to reapply immutable flags after modifications
+reapply_immutable_flags() {
+  echo "Reapplying immutable flags on system files..."
+  chflags schg /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
+}
+
 # Prompt for necessary variables with clear explanations
 echo "This script will harden your FreeBSD system by securing SSH, enabling firewall rules, configuring automatic updates, and more."
 
@@ -118,24 +130,30 @@ configure_ssh() {
   echo "Disabling root login, password-based authentication, and enforcing public key authentication."
 
   sshd_config="/etc/ssh/sshd_config"
-  sed -i '' 's/#PermitRootLogin yes/PermitRootLogin no/' "$sshd_config"
-  sed -i '' 's/#PasswordAuthentication yes/PasswordAuthentication no/' "$sshd_config"
-  sed -i '' 's/#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/' "$sshd_config"
-  sed -i '' 's/#PubkeyAuthentication no/PubkeyAuthentication yes/' "$sshd_config"
 
-  # Explicitly disable PAM to avoid unintended password authentication
-  sed -i '' 's/#UsePAM yes/UsePAM no/' "$sshd_config"
+  # Update or add SSH settings
+  sed -i '' "s/^#\?PermitRootLogin .*/PermitRootLogin no/" "$sshd_config"
+  sed -i '' "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$sshd_config"
+  sed -i '' "s/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/" "$sshd_config"
+  sed -i '' "s/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/" "$sshd_config"
+  sed -i '' "s/^#\?UsePAM .*/UsePAM no/" "$sshd_config"
+  sed -i '' "s/^#\?Port .*/Port $ssh_port/" "$sshd_config"
 
-  sed -i '' 's/#Port 22/Port '"$ssh_port"'/' "$sshd_config"
-  echo "AllowUsers $allowed_user" >>"$sshd_config"
+  # Ensure the allowed user is in the config (replace existing AllowUsers line)
+  if grep -q "^AllowUsers" "$sshd_config"; then
+    sed -i '' "s/^AllowUsers .*/AllowUsers $allowed_user/" "$sshd_config"
+  else
+    echo "AllowUsers $allowed_user" >>"$sshd_config"
+  fi
 
-  echo "SSH key generation and configuration completed. You must manually copy the SSH key to your local machine before restarting SSH."
+  echo "SSH configured with updated settings."
 
   # Generate SSH key if not already existing (switch to ed25519 for stronger security)
   if [ ! -f /home/"$allowed_user"/.ssh/id_ed25519 ]; then
     echo "No SSH key found for $allowed_user. Generating a new key pair..."
     sudo -u "$allowed_user" ssh-keygen -t ed25519 -f /home/"$allowed_user"/.ssh/id_ed25519 -N ""
   fi
+
   echo "SSH key generated for $allowed_user."
 
   # Ensure public key authentication for the user
@@ -152,8 +170,17 @@ configure_ssh() {
 # Function to configure sudo for wheel group and add the allowed user to the group
 configure_sudo() {
   echo "Configuring sudo for the allowed user..."
-  pw groupmod wheel -m "$allowed_user"
-  echo '%wheel ALL=(ALL) ALL' >/usr/local/etc/sudoers.d/wheel # No passwordless sudo
+
+  # Only add user to wheel group if not already present
+  if ! groups "$allowed_user" | grep -q wheel; then
+    pw groupmod wheel -m "$allowed_user"
+  fi
+
+  # Ensure sudo configuration for wheel group
+  if [ ! -f /usr/local/etc/sudoers.d/wheel ]; then
+    echo '%wheel ALL=(ALL) ALL' >/usr/local/etc/sudoers.d/wheel
+  fi
+
   echo "Sudo configured for the allowed user in the wheel group."
 }
 
@@ -325,24 +352,17 @@ lock_down_system() {
   # Adjust file permissions for sensitive system files
   chmod o= /etc/ftpusers /etc/hosts /etc/login.conf /etc/rc.conf /etc/ssh/sshd_config /etc/sysctl.conf /etc/crontab /usr/bin/at /var/log
 
-  # Apply immutable flag to non-user-modifiable system files
-  chflags schg /etc/pf.conf /etc/sysctl.conf /etc/rc.conf /boot/loader.conf /etc/fstab /etc/resolv.conf /etc/login.access /etc/newsyslog.conf
+  # Reapply immutable flag to lock down files
+  reapply_immutable_flags
 
   # Restrict cron and at to root only
   echo "root" | tee /var/cron/allow /var/at/at.allow >/dev/null
   echo "System files locked down and cron/at restricted to root only."
 }
 
-# Function to log the hardening process and provide auditing
-enable_logging() {
-  echo "Logging the hardening process for auditing purposes..."
-  exec >/var/log/harden-freebsd.log 2>&1
-  echo "Logging enabled. Log file: /var/log/harden-freebsd.log"
-}
-
 # Main function to run all steps in order
 main() {
-  enable_logging
+  clear_immutable_flags
   backup_configs
   update_and_install_packages
   configure_ssh
