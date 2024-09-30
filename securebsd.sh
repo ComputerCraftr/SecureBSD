@@ -355,7 +355,7 @@ configure_password_and_umask() {
   echo "Configuring password security with Blowfish encryption and setting a secure umask..."
 
   # Change password hashing to Blowfish
-  sed -i '' -E 's/:passwd_format=.*:/:passwd_format=blf:/' /etc/login.conf
+  sed -i '' -E 's/(:passwd_format=)[^:]+(:)/\1blf\2/' /etc/login.conf
 
   # Check if the 'default' block exists
   if ! grep -q '^default:' /etc/login.conf; then
@@ -365,20 +365,22 @@ configure_password_and_umask() {
 
   # Configure password expiration if not disabled
   if [ "$password_expiration" != "no password expiration" ]; then
-    # Check if 'passwordtime' is already present in the default block
-    if grep -q 'default:.*:passwordtime=' /etc/login.conf; then
-      # Update the existing passwordtime value
-      sed -i '' -E "s/(default:.*)(:passwordtime=[0-9]+d:)/\1:passwordtime=${password_expiration}:/" /etc/login.conf
+    # Extract the full 'default' block and handle multi-line continuation
+    if awk '/^default:/ { flag=1 } flag { print; if (!/\\$/) flag=0 }' /etc/login.conf | grep -q 'passwordtime='; then
+      # Update the existing passwordtime value inside the 'default' block
+      awk -v new_passwordtime="passwordtime=${password_expiration}:" \
+        '/^default:/ { flag=1 }
+         flag && /passwordtime=/ { sub(/passwordtime=[0-9]+d:/, new_passwordtime); flag=0 }
+         { print; if (!/\\$/) flag=0 }' /etc/login.conf >/tmp/login.conf && mv /tmp/login.conf /etc/login.conf
     else
-      # Use sed's append (a\) command to insert the passwordtime line after the default block
-      sed -i '' "/^default:\\\\/a\\
-  :passwordtime=${password_expiration}:\\\\
-" /etc/login.conf
+      # Append passwordtime inside the default block
+      awk -v new_passwordtime="passwordtime=${password_expiration}:\\" \
+        '/^default:/ { print; print "    :" new_passwordtime; next }1' /etc/login.conf >/tmp/login.conf && mv /tmp/login.conf /etc/login.conf
     fi
   fi
 
   # Set secure umask to 027
-  sed -i '' 's/:umask=022:/:umask=027:/' /etc/login.conf
+  sed -i '' -E 's/(:umask=)022(:)/\1027\2/' /etc/login.conf
 
   # Rebuild login capabilities database to apply the changes
   if ! cap_mkdb /etc/login.conf; then
