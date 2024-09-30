@@ -345,21 +345,8 @@ EOF
 # Set securelevel in rc.conf
 configure_securelevel() {
   echo "Configuring securelevel in rc.conf..."
-  rc_conf="/etc/rc.conf"
-
-  # Enable securelevel enforcement
-  if ! grep -q 'kern_securelevel_enable="YES"' "$rc_conf"; then
-    echo 'kern_securelevel_enable="YES"' >>"$rc_conf"
-  fi
-
-  # Set securelevel to desired level (e.g., 1)
-  if ! grep -q 'kern_securelevel="' "$rc_conf"; then
-    echo 'kern_securelevel="1"' >>"$rc_conf"
-  else
-    # Update existing securelevel if needed
-    sed -i '' 's/kern_securelevel="[0-9]*"/kern_securelevel="1"/' "$rc_conf"
-  fi
-
+  sysrc kern_securelevel_enable="YES"
+  sysrc kern_securelevel="1"
   echo "Securelevel configured in rc.conf."
 }
 
@@ -464,7 +451,7 @@ secure_syslog_and_tmp() {
   echo "Securing syslog and configuring /tmp cleanup at startup..."
   sysrc syslogd_flags="-ss"
   service syslogd restart
-  echo 'clear_tmp_enable="YES"' >>/etc/rc.conf
+  sysrc clear_tmp_enable="YES"
   echo "Syslog secured and /tmp cleanup configured."
 }
 
