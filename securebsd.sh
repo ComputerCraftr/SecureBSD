@@ -95,8 +95,9 @@ collect_user_input() {
 
   # Password expiration input
   echo "Set the password expiration period in days. Type 'disable' to disable expiration (not recommended)."
-  printf "Enter the password expiration period in days: "
+  printf "Enter the password expiration period in days (default: 120): "
   read -r password_expiration
+  password_expiration="${password_expiration:-120}"
   validate_password_expiration "$password_expiration"
   if [ "$password_expiration" = "disable" ]; then
     password_expiration="no password expiration"
@@ -365,14 +366,49 @@ configure_securelevel() {
 # Set Blowfish password hashing, enforce password expiration, and configure umask
 configure_password_and_umask() {
   echo "Configuring password security with Blowfish encryption and setting a secure umask..."
-  sed -i '' 's/passwd_format=sha512/passwd_format=blf/' /etc/login.conf
-  if [ "$password_expiration" != "no password expiration" ]; then
-    sed -i '' "s/^default.*/&\n\t:passwordtime=$password_expiration:\\/" /etc/login.conf
+
+  # Change password hashing to Blowfish
+  sed -i '' -E 's/:passwd_format=.*:/:passwd_format=blf:/' /etc/login.conf
+
+  # Check if the 'default' block exists
+  if ! grep -q '^default:' /etc/login.conf; then
+    echo "Error: 'default:' block not found in /etc/login.conf. Cannot proceed."
+    return 1
   fi
-  sed -i '' 's/umask=022/umask=027/' /etc/login.conf
-  cap_mkdb /etc/login.conf
-  echo "Password for $allowed_user will be reset for Blowfish encryption."
-  passwd "$allowed_user"
+
+  # Configure password expiration if not disabled
+  if [ "$password_expiration" != "no password expiration" ]; then
+    # Check if 'passwordtime' is already present in the default block
+    if grep -q 'default:.*:passwordtime=' /etc/login.conf; then
+      # Update the existing passwordtime value
+      sed -i '' -E "s/(default:.*)(:passwordtime=[0-9]+d:)/\1:passwordtime=${password_expiration}:/" /etc/login.conf
+    else
+      # Use sed's append (a\) command to insert the passwordtime line after the default block
+      sed -i '' "/^default:\\\\/a\\
+  :passwordtime=${password_expiration}:\\\\
+" /etc/login.conf
+    fi
+  fi
+
+  # Set secure umask to 027
+  sed -i '' 's/:umask=022:/:umask=027:/' /etc/login.conf
+
+  # Rebuild login capabilities database to apply the changes
+  if ! cap_mkdb /etc/login.conf; then
+    echo "Error: Failed to rebuild the login.conf database."
+    return 1
+  fi
+
+  # Inform the user about the password reset
+  echo "Resetting the password for $allowed_user to ensure Blowfish encryption is applied."
+
+  # Reset the password for the allowed user to apply Blowfish hashing
+  if ! passwd "$allowed_user"; then
+    echo "Error: Failed to reset password for $allowed_user."
+    return 1
+  fi
+
+  echo "Password security configured with Blowfish encryption and umask 027 for $allowed_user."
 }
 
 # Configure PF firewall with updated rules
