@@ -78,8 +78,9 @@ collect_user_input() {
 
   # SSH port input
   echo "Choose a custom SSH port (not the default 22)."
-  printf "Enter the SSH port to use: "
+  printf "Enter the SSH port to use (default: 2222): "
   read -r ssh_port
+  ssh_port="${ssh_port:-2222}"
   validate_port "$ssh_port"
 
   # Admin IPs input
@@ -131,17 +132,18 @@ configure_ssh() {
   echo "Configuring SSH security..."
   sshd_config="/etc/ssh/sshd_config"
 
-  # Apply SSH configuration changes
-  sed -i '' "s/^#\?PermitRootLogin .*/PermitRootLogin no/" "$sshd_config"
-  sed -i '' "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$sshd_config"
-  sed -i '' "s/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/" "$sshd_config"
-  sed -i '' "s/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/" "$sshd_config"
-  sed -i '' "s/^#\?UsePAM .*/UsePAM no/" "$sshd_config"
-  sed -i '' "s/^#\?Port .*/Port $ssh_port/" "$sshd_config"
+  # Apply all SSH configuration changes in a single sed command
+  sed -i '' -E \
+    -e "s/^#?PermitRootLogin .*/PermitRootLogin no/" \
+    -e "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" \
+    -e "s/^#?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/" \
+    -e "s/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/" \
+    -e "s/^#?UsePAM .*/UsePAM no/" \
+    -e "s/^#?Port .*/Port $ssh_port/" "$sshd_config"
 
   # Ensure allowed user is listed in the config
   if grep -q "^AllowUsers" "$sshd_config"; then
-    sed -i '' "s/^AllowUsers .*/AllowUsers $allowed_user/" "$sshd_config"
+    sed -i '' -E "s/^AllowUsers .*/AllowUsers $allowed_user/" "$sshd_config"
   else
     echo "AllowUsers $allowed_user" >>"$sshd_config"
   fi
@@ -158,7 +160,19 @@ configure_ssh() {
   sudo -u "$allowed_user" mkdir -p /home/"$allowed_user"/.ssh
   sudo -u "$allowed_user" cat /home/"$allowed_user"/.ssh/id_ed25519.pub | sudo tee -a /home/"$allowed_user"/.ssh/authorized_keys >/dev/null
   chmod 600 /home/"$allowed_user"/.ssh/authorized_keys
+  chown -R "$allowed_user:$allowed_user" /home/"$allowed_user"/.ssh
   echo "Public key authentication enabled for $allowed_user."
+
+  # Warning: Copy the private key to your local system before rebooting
+  echo "WARNING: You must copy the private key to your local machine before rebooting."
+  echo "To securely transfer the private key, use the following command on your local machine:"
+  echo "scp <username>@<remote_host>:/home/$allowed_user/.ssh/id_ed25519 ~/.ssh/"
+  echo ""
+  echo "After copying the private key, delete it from the remote system for security:"
+  echo "ssh <username>@<remote_host> 'rm /home/$allowed_user/.ssh/id_ed25519'"
+  echo ""
+  echo "Ensure the permissions for the private key on your local machine are set correctly with:"
+  echo "chmod 600 ~/.ssh/id_ed25519"
 }
 
 # Configure sudo for the allowed user
