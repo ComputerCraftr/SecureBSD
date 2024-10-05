@@ -3,6 +3,16 @@
 # Exit on errors and undefined variables
 set -eu
 
+# Define file variables for system hardening
+system_config_files="/etc/pf.conf /etc/resolv.conf /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/hosts /etc/hosts.allow /etc/pam.d/sshd /etc/periodic.conf /etc/ttys /etc/rc.local"
+password_related_files="/etc/master.passwd /etc/group"
+root_modifiable_files="/etc/rc.conf /etc/crontab"
+audit_log_files="/var/log /var/audit/audit.log"
+other_sensitive_files="/etc/ftpusers"
+
+# Combine all sensitive files into one list for consistent permission management
+sensitive_files="$system_config_files $password_related_files $root_modifiable_files $audit_log_files $other_sensitive_files"
+
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root."
@@ -13,7 +23,7 @@ fi
 validate_user() {
   if ! id "$1" >/dev/null 2>&1; then
     echo "Error: User '$1' does not exist. Please provide a valid username."
-    exit 1
+    return 1
   fi
 }
 
@@ -21,7 +31,7 @@ validate_user() {
 validate_port() {
   if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
     echo "Error: Invalid port number '$1'. Port must be an integer between 1 and 65535."
-    exit 1
+    return 1
   fi
 }
 
@@ -29,7 +39,7 @@ validate_port() {
 validate_interface() {
   if ! ifconfig "$1" >/dev/null 2>&1; then
     echo "Error: Invalid interface '$1'. Please enter a valid network interface."
-    exit 1
+    return 1
   fi
 }
 
@@ -38,20 +48,16 @@ validate_password_expiration() {
   if [ "$1" != "disable" ]; then
     if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -le 0 ]; then
       echo "Error: Invalid password expiration '$1'. Must be a positive integer or 'disable'."
-      exit 1
+      return 1
     fi
   fi
 }
 
-# Clear immutable flags on system files to allow updates
+# Clear immutable flags on system files for updates
 clear_immutable_flags() {
   echo "Clearing immutable flags on system files for updates..."
 
-  # Space-separated list of files to check
-  files_to_check="/etc/pf.conf /etc/sysctl.conf /boot/loader.conf /etc/fstab /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/hosts /etc/hosts.allow /etc/pam.d/sshd"
-
-  # Iterate through the list, check if the file exists, and clear the immutable flag
-  for file in $files_to_check; do
+  for file in $sensitive_files; do
     if [ ! -f "$file" ]; then
       echo "$file does not exist, creating it."
       touch "$file"
@@ -63,7 +69,7 @@ clear_immutable_flags() {
 # Reapply immutable flags after updates
 reapply_immutable_flags() {
   echo "Reapplying immutable flags on system files..."
-  chflags schg /etc/pf.conf /etc/sysctl.conf /boot/loader.conf /etc/fstab /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/hosts /etc/hosts.allow /etc/pam.d/sshd
+  chflags schg $system_config_files
 }
 
 # Collect user input for SSH, IPs, and password expiration settings
@@ -250,7 +256,7 @@ EOF
   # Test the Suricata configuration
   if ! suricata -T -c /usr/local/etc/suricata/suricata.yaml; then
     echo "Suricata configuration test failed. Please review the configuration."
-    exit 1
+    return 1
   fi
 
   # Enable Suricata at boot
@@ -299,25 +305,18 @@ net.bpf.zerocopy_enable=1
 # Disable core dumps to prevent sensitive data exposure
 kern.coredump=0
 
-# Enable Address Space Layout Randomization (ASLR) to mitigate certain types of attacks
-kern.elf64.aslr.enable=1
-kern.elf64.aslr.pie_enable=1
-
 # Randomize PID assignment to make process prediction harder
 kern.randompid=1
 
 # Disable core dumps for setuid binaries to prevent exposure of sensitive information
 kern.sugid_coredump=0
 
-# Stack gap randomization to protect against stack-based buffer overflow attacks
-kern.elf64.stackgap.randomize=1
-
 # Restrict visibility of processes to the owner only
 security.bsd.see_other_uids=0
 security.bsd.see_other_gids=0
 
 # Restrict jail process visibility
-security.jail.hide_jails=1
+security.bsd.see_jail_proc=0
 
 # Prevent unprivileged processes from reading kernel message buffers
 security.bsd.unprivileged_read_msgbuf=0
@@ -337,7 +336,6 @@ mac_bsdextended_load="YES"
 mac_partition_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
-mac_veriexec_load="YES"
 EOF
   echo "loader.conf hardened with additional kernel security modules."
 }
@@ -375,7 +373,7 @@ configure_password_and_umask() {
     else
       # Append passwordtime inside the default block
       awk -v new_passwordtime="passwordtime=${password_expiration}:\\" \
-        '/^default:/ { print; print "    :" new_passwordtime; next }1' /etc/login.conf >/tmp/login.conf && mv /tmp/login.conf /etc/login.conf
+        '/^default:/ { print; print "\t:" new_passwordtime; next }1' /etc/login.conf >/tmp/login.conf && mv /tmp/login.conf /etc/login.conf
     fi
   fi
 
@@ -389,11 +387,17 @@ configure_password_and_umask() {
   fi
 
   # Inform the user about the password reset
-  echo "Resetting the password for $allowed_user to ensure Blowfish encryption is applied."
+  echo "Resetting the password for $allowed_user and root to ensure Blowfish encryption is applied."
 
   # Reset the password for the allowed user to apply Blowfish hashing
   if ! passwd "$allowed_user"; then
     echo "Error: Failed to reset password for $allowed_user."
+    return 1
+  fi
+
+  # Reset the password for the root user to apply Blowfish hashing
+  if ! passwd; then
+    echo "Error: Failed to reset password for root."
     return 1
   fi
 
@@ -475,7 +479,7 @@ configure_cron_updates() {
 # Lock down sensitive system files
 lock_down_system() {
   echo "Locking down critical system files..."
-  chmod o= /etc/ftpusers /etc/hosts /etc/login.conf /etc/rc.conf /etc/ssh/sshd_config /etc/sysctl.conf /boot/loader.conf /etc/crontab /usr/bin/at /var/log
+  chmod o= $sensitive_files
   reapply_immutable_flags
   echo "root" | tee /var/cron/allow /var/at/at.allow >/dev/null
   echo "System files locked down and cron/at restricted to root only."
