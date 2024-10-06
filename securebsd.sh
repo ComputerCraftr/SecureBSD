@@ -196,28 +196,25 @@ configure_sudo() {
   echo "Sudo configured for the allowed user in the wheel group."
 }
 
-# Configure Suricata for IPS mode and include custom config
+# Configure Suricata for IPS mode using pcap and include custom config
 configure_suricata() {
-  echo "Configuring Suricata for IPS mode..."
+  echo "Configuring Suricata for IPS mode using pcap (BPF)..."
 
   # Define the configuration file paths as variables
   suricata_conf="/usr/local/etc/suricata/suricata.yaml"
   suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
   suricata_rules="/var/lib/suricata/rules/custom.rules"
 
-  # Create or update the Suricata custom configuration file
+  # Create or update the Suricata custom configuration file for pcap (BPF)
   cat <<EOF >"$suricata_custom_conf"
 %YAML 1.1
 ---
-af-packet:
+pcap:
   - interface: $external_interface
     threads: auto
     cluster-id: 99
     cluster-type: cluster_flow
     defrag: yes
-    use-mmap: yes
-    ring-size: 4096
-    block-size: 65536
     checksum-checks: auto
     copy-mode: ips
     use-emergency-flush: yes
@@ -234,14 +231,13 @@ action-order:
   - alert
 
 outputs:
-  - fast:
-      enabled: yes
-      filename: /var/log/suricata/fast.log
-      append: yes
   - eve-log:
       enabled: yes
       filetype: regular
       filename: /var/log/suricata/eve.json
+      types:
+        - drop:
+            enabled: yes
 EOF
 
   # Update SSH port in suricata.yaml using sed to match single values or lists
@@ -310,8 +306,15 @@ net.inet.tcp.syncookies=1
 # Drop SYN+FIN packets to prevent stealth attacks
 net.inet.tcp.drop_synfin=1
 
-# Improve BPF performance with zerocopy for Suricata
+# Enable BPF Zero-Copy for better performance with Suricata
 net.bpf.zerocopy_enable=1
+
+# Increase BPF buffer size for better packet handling
+net.bpf.bufsize=1048576
+net.bpf.maxbufsize=1048576
+
+# Enable optimized writing for multiple readers of BPF
+net.bpf.optimize_writers=1
 
 # Disable core dumps to prevent sensitive data exposure
 kern.coredump=0
