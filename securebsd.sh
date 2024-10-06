@@ -9,7 +9,7 @@ full_lockdown_files="$service_scheduler_files /etc/pf.conf /etc/pf.os /usr/local
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
-service_related_files="/etc/rc.conf /etc/rc.local /etc/crontab /etc/periodic.conf /usr/local/etc/anacrontab"
+service_related_files="/etc/rc.conf /etc/crontab /usr/local/etc/anacrontab"
 audit_log_files="/var/log /var/audit"
 other_sensitive_files="/etc/ftpusers"
 sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files $other_sensitive_files"
@@ -57,13 +57,12 @@ validate_password_expiration() {
 # Clear immutable flags on system files for updates
 clear_immutable_flags() {
   echo "Clearing immutable flags on system files for updates..."
-
   for file in $full_lockdown_files $sensitive_files; do
     if [ ! -e "$file" ]; then
       echo "Warning: $file does not exist, skipping."
       continue
     fi
-    chflags noschg "$file" # Clear immutable flag for the file
+    chflags noschg "$file"
   done
 }
 
