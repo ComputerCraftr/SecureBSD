@@ -200,8 +200,13 @@ configure_sudo() {
 configure_suricata() {
   echo "Configuring Suricata for IPS mode..."
 
-  # Create a custom configuration file for Suricata
-  cat <<EOF >/usr/local/etc/suricata/suricata-custom.yaml
+  # Define the configuration file paths as variables
+  suricata_conf="/usr/local/etc/suricata/suricata.yaml"
+  suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
+  suricata_rules="/var/lib/suricata/rules/custom.rules"
+
+  # Create or update the Suricata custom configuration file
+  cat <<EOF >"$suricata_custom_conf"
 %YAML 1.1
 ---
 af-packet:
@@ -237,32 +242,36 @@ outputs:
       enabled: yes
       filetype: regular
       filename: /var/log/suricata/eve.json
-
-app-layer:
-  protocols:
-    ssh:
-      enabled: yes
-
-    pgsql:
-      enabled: yes
 EOF
 
+  # Update SSH port in suricata.yaml using sed to match single values or lists
+  sed -E -i '' "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$ssh_port/" "$suricata_conf"
+
   # Append the custom configuration to the existing suricata.yaml using the `include` directive
-  if ! grep -q "include: /usr/local/etc/suricata/suricata-custom.yaml" /usr/local/etc/suricata/suricata.yaml; then
-    echo "include: /usr/local/etc/suricata/suricata-custom.yaml" >>/usr/local/etc/suricata/suricata.yaml
+  if ! grep -q "include: $suricata_custom_conf" "$suricata_conf"; then
+    echo "include: $suricata_custom_conf" >>"$suricata_conf"
     echo "Custom Suricata configuration included."
   else
     echo "Custom Suricata configuration is already included."
   fi
 
+  # Add custom Suricata rule for SSH port if not present
+  if ! grep -q "port $ssh_port" "$suricata_rules"; then
+    echo "alert tcp any any -> any $ssh_port (msg:\"SSH connection on custom port $ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
+    echo "Custom SSH port rule added to Suricata."
+  else
+    echo "Custom SSH port rule already exists in Suricata."
+  fi
+
   # Test the Suricata configuration
-  if ! suricata -T -c /usr/local/etc/suricata/suricata.yaml; then
+  if ! suricata -T -c "$suricata_conf"; then
     echo "Suricata configuration test failed. Please review the configuration."
     return 1
   fi
 
   # Enable Suricata at boot
   sysrc suricata_enable="YES"
+  sysrc suricata_interface="$external_interface"
   echo "Suricata configured to enable at next reboot on interface $external_interface."
 }
 
