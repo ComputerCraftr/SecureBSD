@@ -3,15 +3,16 @@
 # Exit on errors and undefined variables
 set -eu
 
-# Define file variables for system hardening
-system_config_files="/etc/pf.conf /etc/resolv.conf /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/hosts /etc/hosts.allow /etc/pam.d/sshd /etc/periodic.conf /etc/ttys /etc/rc.local"
-password_related_files="/etc/master.passwd /etc/group"
-root_modifiable_files="/etc/rc.conf /etc/crontab"
-audit_log_files="/var/log /var/audit/audit.log"
-other_sensitive_files="/etc/ftpusers"
+# Define file variables for system hardening (chflags schg)
+service_scheduler_files="/var/cron/allow /var/at/at.allow"
+full_lockdown_files="$service_scheduler_files /etc/pf.conf /etc/pf.os /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
-# Combine all sensitive files into one list for consistent permission management
-sensitive_files="$system_config_files $password_related_files $root_modifiable_files $audit_log_files $other_sensitive_files"
+# Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
+password_related_files="/etc/master.passwd"
+service_related_files="/etc/rc.conf /etc/rc.local /etc/crontab /etc/periodic.conf /usr/local/etc/anacrontab"
+audit_log_files="/var/log /var/audit"
+other_sensitive_files="/etc/ftpusers"
+sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files $other_sensitive_files"
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
@@ -57,10 +58,10 @@ validate_password_expiration() {
 clear_immutable_flags() {
   echo "Clearing immutable flags on system files for updates..."
 
-  for file in $sensitive_files; do
-    if [ ! -f "$file" ]; then
-      echo "$file does not exist, creating it."
-      touch "$file"
+  for file in $full_lockdown_files $sensitive_files; do
+    if [ ! -e "$file" ]; then
+      echo "Warning: $file does not exist, skipping."
+      continue
     fi
     chflags noschg "$file" # Clear immutable flag for the file
   done
@@ -69,7 +70,9 @@ clear_immutable_flags() {
 # Reapply immutable flags after updates
 reapply_immutable_flags() {
   echo "Reapplying immutable flags on system files..."
-  chflags schg $system_config_files
+  for file in $full_lockdown_files; do
+    chflags schg "$file"
+  done
 }
 
 # Collect user input for SSH, IPs, and password expiration settings
@@ -129,7 +132,7 @@ update_and_install_packages() {
   freebsd-update fetch install
   pkg update
   pkg upgrade -y
-  pkg install -y sudo py311-fail2ban suricata
+  pkg install -y sudo py311-fail2ban suricata anacron
   suricata-update
   echo "System updated and packages installed."
 }
@@ -401,7 +404,7 @@ configure_password_and_umask() {
     return 1
   fi
 
-  echo "Password security configured with Blowfish encryption and umask 027 for $allowed_user."
+  echo "Password security configured with umask 027 and Blowfish encryption for $allowed_user."
 }
 
 # Configure PF firewall with updated rules
@@ -479,9 +482,13 @@ configure_cron_updates() {
 # Lock down sensitive system files
 lock_down_system() {
   echo "Locking down critical system files..."
-  chmod o= $sensitive_files
+  for file in $service_scheduler_files; do
+    echo "root" | tee "$file" >/dev/null
+  done
+  for file in $sensitive_files; do
+    chmod o= "$file"
+  done
   reapply_immutable_flags
-  echo "root" | tee /var/cron/allow /var/at/at.allow >/dev/null
   echo "System files locked down and cron/at restricted to root only."
 }
 
