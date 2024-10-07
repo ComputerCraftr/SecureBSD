@@ -196,30 +196,27 @@ configure_sudo() {
   echo "Sudo configured for the allowed user in the wheel group."
 }
 
-# Configure Suricata for IPS mode using pcap and include custom config
+# Configure Suricata for IPS mode and include custom config
 configure_suricata() {
-  echo "Configuring Suricata for IPS mode using pcap (BPF)..."
+  echo "Configuring Suricata for IPS mode with ipfw..."
 
   # Define the configuration file paths as variables
   suricata_conf="/usr/local/etc/suricata/suricata.yaml"
   suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
   suricata_rules="/var/lib/suricata/rules/custom.rules"
+  suricata_port="8000" # Define the divert port for ipfw to Suricata
 
-  # Create or update the Suricata custom configuration file for pcap (BPF)
+  # Create or update the Suricata custom configuration file
   cat <<EOF >"$suricata_custom_conf"
 %YAML 1.1
 ---
-pcap:
+ipfw:
   - interface: $external_interface
+    divert-port: $suricata_port
     threads: auto
-    cluster-id: 99
-    cluster-type: cluster_flow
-    defrag: yes
     checksum-checks: auto
-    copy-mode: ips
-    use-emergency-flush: yes
 
-# Enable inline stream handling
+# Enable inline stream handling for IPS mode
 stream:
   inline: yes
 
@@ -230,6 +227,7 @@ action-order:
   - reject
   - alert
 
+# Output logs including dropped packets
 outputs:
   - eve-log:
       enabled: yes
@@ -306,16 +304,6 @@ net.inet.tcp.syncookies=1
 # Drop SYN+FIN packets to prevent stealth attacks
 net.inet.tcp.drop_synfin=1
 
-# Enable BPF Zero-Copy for better performance with Suricata
-net.bpf.zerocopy_enable=1
-
-# Increase BPF buffer size for better packet handling
-net.bpf.bufsize=1048576
-net.bpf.maxbufsize=1048576
-
-# Enable optimized writing for multiple readers of BPF
-net.bpf.optimize_writers=1
-
 # Disable core dumps to prevent sensitive data exposure
 kern.coredump=0
 
@@ -350,6 +338,7 @@ mac_bsdextended_load="YES"
 mac_partition_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
+dummynet_load="YES"
 EOF
   echo "loader.conf hardened with additional kernel security modules."
 }
@@ -418,52 +407,110 @@ configure_password_and_umask() {
   echo "Password security configured with umask 027 and Blowfish encryption for $allowed_user."
 }
 
-# Configure PF firewall with updated rules
-configure_pf() {
-  echo "Configuring PF firewall..."
-  cat <<EOF >/etc/pf.conf
-# Ignore traffic travelling within loopback (stateless)
-set skip on lo0
+# Configure IPFW firewall with updated rules
+configure_ipfw() {
+  echo "Configuring IPFW firewall with Suricata and Dummynet..."
 
-# Enable anti-spoofing on external interfaces (stateless)
-antispoof quick for $external_interface
+  # Create /etc/ipfw.rules with the necessary firewall rules
+  cat <<EOF >/etc/ipfw.rules
+#!/bin/sh
 
-# Reassemble fragmented packets (stateless, leave DF bit intact to allow PMTUD)
-scrub in all fragment reassemble
+# Define the firewall command
+fwcmd="/sbin/ipfw"
 
-# Block everything unless told otherwise (silent drop)
-block drop
+# Define external interface, internal network, and Suricata divert port
+ext_if="$external_interface"  # Adjust as needed for your external interface
+int_if="$external_interface"  # Adjust to your internal network interface
+int_net="10.0.0.0/8"  # Define the internal network
+divert_port="$suricata_port"  # Suricata divert port
 
-# Define separate flood tables for SYN flood and ICMP flood protection
-table <syn_flood_table> persist
-table <icmp_flood_table> persist
+# Check if IPv6 is available by detecting any IPv6 addresses
+ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
 
-# SYN flood protection using SYN cookies (stateful, no synproxy)
-pass in proto tcp from { $admin_ips } to any port $ssh_port flags S/SAFR keep state (max-src-conn-rate 50/10, overload <syn_flood_table> flush global log)
+# Flush existing rules
+\${fwcmd} -q -f flush
 
-# ICMPv4 Echo Requests (ping flood protection) + rate limiting (no logging to avoid log exhaustion)
-pass in proto icmp all icmp-type echoreq keep state (max 10/second, overload <icmp_flood_table> flush global)
+# Allow all traffic on the loopback interface (lo0)
+\${fwcmd} add 100 allow all from any to any via lo0
 
-# ICMPv6 Echo Requests (ping flood protection) + rate limiting (no logging to avoid log exhaustion)
-pass in inet6 proto ipv6-icmp all icmp6-type echoreq keep state (max 10/second, overload <icmp_flood_table> flush global)
+# Deny any traffic destined to the IPv4 loopback network (127.0.0.0/8)
+\${fwcmd} add 200 deny all from any to 127.0.0.0/8
 
-# Allow essential ICMPv6 messages (stateless)
-pass in inet6 proto ipv6-icmp icmp6-type 2 no state  # Packet Too Big (PMTUD)
-pass in inet6 proto ipv6-icmp icmp6-type 134 no state # Router Advertisement
-pass in inet6 proto ipv6-icmp icmp6-type 135 no state # Neighbor Solicitation
-pass in inet6 proto ipv6-icmp icmp6-type 136 no state # Neighbor Advertisement
+# Deny any traffic with a source address from the IPv4 loopback network (127.0.0.0/8)
+\${fwcmd} add 300 deny ip from 127.0.0.0/8 to any
 
-# Allow DHCPv4 (stateful)
-pass in inet proto udp from port 67 to port 68 keep state
+# If IPv6 is available, configure IPv6 loopback
+if [ \$ipv6_available -eq 1 ]; then
+    # Deny traffic destined to the IPv6 loopback address (::1)
+    \${fwcmd} add 400 deny all from any to ::1
 
-# Allow DHCPv6 (stateful)
-pass in inet6 proto udp from port 547 to port 546 keep state
+    # Deny traffic with a source address from the IPv6 loopback address (::1)
+    \${fwcmd} add 500 deny all from ::1 to any
+fi
 
-# Allow outgoing connections initiated from this system (stateful)
-pass out keep state
+# Drop traffic from the Fail2Ban table
+\${fwcmd} add 600 deny ip from 'table(fail2ban)' to any
+
+# Allow ARP only on internal LAN interface
+\${fwcmd} add 700 allow ether from any to any arp via \$int_if
+
+# Block packets with IP options (prevent spoofing, source routing attacks)
+\${fwcmd} add 800 deny ip from any to any ipoptions
+
+# Consolidated Anti-spoofing: Block traffic with spoofed IPs on all interfaces (in and out)
+\${fwcmd} add 900 deny all from any to any not verrevpath
+
+# Divert established connections to Suricata for analysis
+\${fwcmd} add 1000 divert \$divert_port ip from any to any established
+
+# Divert new SSH connections to Suricata for analysis
+\${fwcmd} add 1100 divert \$divert_port tcp from $admin_ips to me $ssh_port setup keep-state limit dst-addr 10
+
+# Divert new HTTP/HTTPS connections to Suricata for analysis
+\${fwcmd} add 1200 divert \$divert_port tcp from any to me 80,443 setup keep-state limit src-addr 100
+
+# Create a dummynet pipe to limit total ICMPv4 and ICMPv6 ping bandwidth to 10Kbit/s
+\${fwcmd} pipe 1 config bw 10Kbit/s
+
+# Allow ICMPv4 pings (ping requests to firewall itself), limit via dummynet pipe (not diverted to Suricata)
+\${fwcmd} add 1300 allow icmp from any to me icmptypes 8
+\${fwcmd} add 1310 pipe 1 ip from any to me icmp
+
+# Allow ICMPv6 pings (ping requests to any device on LAN), limit via dummynet pipe (not diverted to Suricata)
+\${fwcmd} add 1400 allow ipv6-icmp from any to any icmp6types 128
+\${fwcmd} add 1410 pipe 1 ipv6-icmp from any to any
+
+# Combine ICMPv6 Neighbor Discovery, Router Advertisements, and PMTUD inbound
+\${fwcmd} add 1500 allow ipv6-icmp from any to any icmp6types 2,133,134,135,136
+
+# Allow DHCPv4 for WAN (firewall receiving dynamic IPv4 from ISP) inbound on WAN
+\${fwcmd} add 1600 allow udp from any 67 to me 68 in recv \$ext_if
+
+# Allow DHCPv6 for WAN (firewall receiving dynamic IPv6 from ISP) inbound on WAN
+\${fwcmd} add 1610 allow udp from any 547 to me 546 in recv \$ext_if
+
+# Allow DHCPv4 inbound on LAN (for local DHCP server to assign IP addresses to LAN clients)
+\${fwcmd} add 1700 allow udp from any 67 to any 68 in recv \$int_if
+
+# Allow DHCPv6 inbound on LAN (for local DHCP server to assign IP addresses to LAN clients)
+\${fwcmd} add 1710 allow udp from any 547 to any 546 in recv \$int_if
+
+# Divert all outgoing traffic (including TCP, UDP, ICMP, etc.) from firewall to Suricata
+\${fwcmd} add 1800 divert \$divert_port ip from me to any out keep-state
+
+# Divert all outgoing traffic from internal network to Suricata
+\${fwcmd} add 1810 divert \$divert_port ip from \$int_net to any out keep-state
+
+# Deny all other traffic (both IP and non-IP)
+\${fwcmd} add 65534 deny all from any to any
 EOF
-  sysrc pf_enable="YES"
-  echo "PF firewall configured to enable at next reboot."
+
+  # Set the firewall to load on boot and specify the rules file
+  sysrc firewall_enable="YES"
+  sysrc firewall_script="/etc/ipfw.rules"
+  sysrc firewall_type="custom" # Indicate that this is a custom firewall
+
+  echo "IPFW firewall with Suricata and Dummynet configured, rules saved to /etc/ipfw.rules, and enabled at boot."
 }
 
 # Secure syslog and configure /tmp cleanup at startup
@@ -509,13 +556,13 @@ main() {
   clear_immutable_flags
   backup_configs
   update_and_install_packages
+  harden_sysctl
+  harden_loader_conf
   configure_ssh
   configure_sudo
   configure_fail2ban
-  configure_pf
   configure_suricata
-  harden_sysctl
-  harden_loader_conf
+  configure_ipfw
   configure_securelevel
   configure_password_and_umask
   secure_syslog_and_tmp
