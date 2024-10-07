@@ -464,10 +464,10 @@ fi
 \${fwcmd} add 1000 divert \$divert_port ip from any to any established
 
 # Divert new SSH connections to Suricata for analysis
-\${fwcmd} add 1100 divert \$divert_port tcp from $admin_ips to me $ssh_port setup keep-state limit dst-addr 10
+\${fwcmd} add 1100 divert \$divert_port tcp from $admin_ips to me $ssh_port setup limit dst-addr 10
 
 # Divert new HTTP/HTTPS connections to Suricata for analysis
-\${fwcmd} add 1200 divert \$divert_port tcp from any to me 80,443 setup keep-state limit src-addr 100
+\${fwcmd} add 1200 divert \$divert_port tcp from any to me 80,443 setup limit src-addr 100
 
 # Create a dummynet pipe to limit total ICMPv4 and ICMPv6 ping bandwidth to 10Kbit/s
 \${fwcmd} pipe 1 config bw 10Kbit/s
