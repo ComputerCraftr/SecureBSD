@@ -5,7 +5,7 @@ set -eu
 
 # Define file variables for system hardening (chflags schg)
 service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/pf.conf /etc/pf.os /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
@@ -97,7 +97,7 @@ collect_user_input() {
   read -r admin_ips
 
   # Suricata interface input
-  printf "Enter the external network interface for PF and Suricata (e.g., em0, re0): "
+  printf "Enter the external network interface for IPFW and Suricata (e.g., em0, re0): "
   read -r external_interface
   validate_interface "$external_interface"
 
@@ -198,13 +198,13 @@ configure_sudo() {
 
 # Configure Suricata for IPS mode and include custom config
 configure_suricata() {
-  echo "Configuring Suricata for IPS mode with ipfw..."
+  echo "Configuring Suricata for IPS mode with IPFW..."
 
   # Define the configuration file paths as variables
   suricata_conf="/usr/local/etc/suricata/suricata.yaml"
   suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
   suricata_rules="/var/lib/suricata/rules/custom.rules"
-  suricata_port="8000" # Define the divert port for ipfw to Suricata
+  suricata_port="8000" # Define the divert port for IPFW to Suricata
 
   # Create or update the Suricata custom configuration file
   cat <<EOF >"$suricata_custom_conf"
