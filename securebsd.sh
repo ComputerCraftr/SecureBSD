@@ -338,6 +338,7 @@ mac_bsdextended_load="YES"
 mac_partition_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
+ipdivert_load="YES"
 dummynet_load="YES"
 EOF
   echo "loader.conf hardened with additional kernel security modules."
