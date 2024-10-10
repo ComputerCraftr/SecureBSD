@@ -437,7 +437,7 @@ ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
 \${fwcmd} add 200 deny all from any to 127.0.0.0/8
 
 # Deny any traffic with a source address from the IPv4 loopback network (127.0.0.0/8)
-\${fwcmd} add 300 deny ip from 127.0.0.0/8 to any
+\${fwcmd} add 300 deny all from 127.0.0.0/8 to any
 
 # If IPv6 is available, configure IPv6 loopback
 if [ \$ipv6_available -eq 1 ]; then
@@ -449,13 +449,13 @@ if [ \$ipv6_available -eq 1 ]; then
 fi
 
 # Drop traffic from the Fail2Ban table
-\${fwcmd} add 600 deny ip from 'table(fail2ban)' to any
+\${fwcmd} add 600 deny all from 'table(fail2ban)' to any
 
 # Allow ARP only on internal LAN interface
-\${fwcmd} add 700 allow ether from any to any arp via \$int_if
+\${fwcmd} add 700 allow all from any to any layer2 mac-type arp via \$int_if
 
 # Block packets with IP options (prevent spoofing, source routing attacks)
-\${fwcmd} add 800 deny ip from any to any ipoptions
+\${fwcmd} add 800 deny all from any to any ipoptions ssrr,lsrr,rr,ts
 
 # Consolidated Anti-spoofing: Block traffic with spoofed IPs on all interfaces (in and out)
 \${fwcmd} add 900 deny all from any to any not verrevpath
@@ -474,11 +474,11 @@ fi
 
 # Allow ICMPv4 pings (ping requests to firewall itself), limit via dummynet pipe (not diverted to Suricata)
 \${fwcmd} add 1300 allow icmp from any to me icmptypes 8
-\${fwcmd} add 1310 pipe 1 ip from any to me icmp
+\${fwcmd} add 1310 pipe 1 ip from any to me icmptypes 8
 
 # Allow ICMPv6 pings (ping requests to any device on LAN), limit via dummynet pipe (not diverted to Suricata)
 \${fwcmd} add 1400 allow ipv6-icmp from any to any icmp6types 128
-\${fwcmd} add 1410 pipe 1 ipv6-icmp from any to any
+\${fwcmd} add 1410 pipe 1 ipv6-icmp from any to any icmp6types 128
 
 # Combine ICMPv6 Neighbor Discovery, Router Advertisements, and PMTUD inbound
 \${fwcmd} add 1500 allow ipv6-icmp from any to any icmp6types 2,133,134,135,136
