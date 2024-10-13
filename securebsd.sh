@@ -5,7 +5,7 @@ set -eu
 
 # Define file variables for system hardening (chflags schg)
 service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/pf.conf /etc/pf.os /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
@@ -87,9 +87,9 @@ collect_user_input() {
   # SSH port input
   echo "Choose a custom SSH port (not the default 22)."
   printf "Enter the SSH port to use (default: 2222): "
-  read -r ssh_port
-  ssh_port="${ssh_port:-2222}"
-  validate_port "$ssh_port"
+  read -r admin_ssh_port
+  admin_ssh_port="${admin_ssh_port:-2222}"
+  validate_port "$admin_ssh_port"
 
   # Admin IPs input
   echo "Enter a comma-separated list of IPs allowed to SSH into the server, or type 'any' to allow all IPs (not recommended)."
@@ -97,7 +97,7 @@ collect_user_input() {
   read -r admin_ips
 
   # Suricata interface input
-  printf "Enter the external network interface for PF and Suricata (e.g., em0, re0): "
+  printf "Enter the external network interface for IPFW and Suricata (e.g., em0, re0): "
   read -r external_interface
   validate_interface "$external_interface"
 
@@ -148,7 +148,7 @@ configure_ssh() {
     -e "s/^#?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/" \
     -e "s/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/" \
     -e "s/^#?UsePAM .*/UsePAM no/" \
-    -e "s/^#?Port .*/Port $ssh_port/" "$sshd_config"
+    -e "s/^#?Port .*/Port $admin_ssh_port/" "$sshd_config"
 
   # Ensure allowed user is listed in the config
   if grep -q "^AllowUsers" "$sshd_config"; then
@@ -198,54 +198,52 @@ configure_sudo() {
 
 # Configure Suricata for IPS mode and include custom config
 configure_suricata() {
-  echo "Configuring Suricata for IPS mode..."
+  echo "Configuring Suricata for IPS mode with IPFW..."
 
   # Define the configuration file paths as variables
   suricata_conf="/usr/local/etc/suricata/suricata.yaml"
   suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
   suricata_rules="/var/lib/suricata/rules/custom.rules"
+  suricata_port="8000" # Define the divert port for IPFW to Suricata
 
   # Create or update the Suricata custom configuration file
   cat <<EOF >"$suricata_custom_conf"
 %YAML 1.1
 ---
-af-packet:
+# Configure Suricata for inline packet processing via IPFW (IPS mode)
+ipfw:
   - interface: $external_interface
+    divert-port: $suricata_port
     threads: auto
-    cluster-id: 99
-    cluster-type: cluster_flow
-    defrag: yes
-    use-mmap: yes
-    ring-size: 4096
-    block-size: 65536
     checksum-checks: auto
-    copy-mode: ips
-    use-emergency-flush: yes
 
-# Enable inline stream handling
+# Set Suricata to multi-threaded mode (workers) for efficient traffic processing
+runmode: workers
+
+# Enable inline stream handling for IPS mode
 stream:
   inline: yes
 
-# Specify the action order for Suricata rules in IPS mode
+# Define the priority of actions (pass, drop, reject, alert) for Suricata rules in IPS mode
 action-order:
   - pass
   - drop
   - reject
   - alert
 
+# Configure Suricata to log events (including dropped packets) to eve.json
 outputs:
-  - fast:
-      enabled: yes
-      filename: /var/log/suricata/fast.log
-      append: yes
   - eve-log:
       enabled: yes
       filetype: regular
       filename: /var/log/suricata/eve.json
+      types:
+        - drop:
+            enabled: yes
 EOF
 
   # Update SSH port in suricata.yaml using sed to match single values or lists
-  sed -E -i '' "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$ssh_port/" "$suricata_conf"
+  sed -E -i '' "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$admin_ssh_port/" "$suricata_conf"
 
   # Append the custom configuration to the existing suricata.yaml using the `include` directive
   if ! grep -q "include: $suricata_custom_conf" "$suricata_conf"; then
@@ -256,8 +254,8 @@ EOF
   fi
 
   # Add custom Suricata rule for SSH port if not present
-  if ! grep -q "port $ssh_port" "$suricata_rules"; then
-    echo "alert tcp any any -> any $ssh_port (msg:\"SSH connection on custom port $ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
+  if ! grep -q "port $admin_ssh_port" "$suricata_rules"; then
+    echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
     echo "Custom SSH port rule added to Suricata."
   else
     echo "Custom SSH port rule already exists in Suricata."
@@ -271,7 +269,6 @@ EOF
 
   # Enable Suricata at boot
   sysrc suricata_enable="YES"
-  sysrc suricata_interface="$external_interface"
   echo "Suricata configured to enable at next reboot on interface $external_interface."
 }
 
@@ -281,7 +278,7 @@ configure_fail2ban() {
   cat <<EOF >/usr/local/etc/fail2ban/jail.local
 [sshd]
 enabled = true
-port = $ssh_port
+port = $admin_ssh_port
 filter = sshd
 logpath = /var/log/auth.log
 maxretry = 3
@@ -309,9 +306,6 @@ net.inet.tcp.syncookies=1
 
 # Drop SYN+FIN packets to prevent stealth attacks
 net.inet.tcp.drop_synfin=1
-
-# Improve BPF performance with zerocopy for Suricata
-net.bpf.zerocopy_enable=1
 
 # Disable core dumps to prevent sensitive data exposure
 kern.coredump=0
@@ -347,6 +341,9 @@ mac_bsdextended_load="YES"
 mac_partition_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
+ipfw_load="YES"
+ipdivert_load="YES"
+dummynet_load="YES"
 EOF
   echo "loader.conf hardened with additional kernel security modules."
 }
@@ -415,52 +412,160 @@ configure_password_and_umask() {
   echo "Password security configured with umask 027 and Blowfish encryption for $allowed_user."
 }
 
-# Configure PF firewall with updated rules
-configure_pf() {
-  echo "Configuring PF firewall..."
-  cat <<EOF >/etc/pf.conf
-# Ignore traffic travelling within loopback (stateless)
-set skip on lo0
+# Configure IPFW firewall with updated rules
+configure_ipfw() {
+  echo "Configuring IPFW firewall with Suricata and Dummynet..."
 
-# Enable anti-spoofing on external interfaces (stateless)
-antispoof quick for $external_interface
+  # Create /etc/ipfw.rules with the necessary firewall rules
+  cat <<EOF >/etc/ipfw.rules
+#!/bin/sh
 
-# Reassemble fragmented packets (stateless, leave DF bit intact to allow PMTUD)
-scrub in all fragment reassemble
+# Define the firewall command
+fwcmd="/sbin/ipfw"
 
-# Block everything unless told otherwise (silent drop)
-block drop
+# Define external interface, internal interface, and Suricata divert port
+ext_if="$external_interface"  # Adjust as needed for your external interface
+int_if="$external_interface"  # Adjust to your internal network interface
+divert_port="$suricata_port"  # Suricata divert port
+ssh_ips="$admin_ips"          # List of allowed SSH source IPs
+ssh_port="$admin_ssh_port"    # SSH port to allow
 
-# Define separate flood tables for SYN flood and ICMP flood protection
-table <syn_flood_table> persist
-table <icmp_flood_table> persist
+# Check if IPv6 is available by detecting any IPv6 addresses
+ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
 
-# SYN flood protection using SYN cookies (stateful, no synproxy)
-pass in proto tcp from { $admin_ips } to any port $ssh_port flags S/SAFR keep state (max-src-conn-rate 50/10, overload <syn_flood_table> flush global log)
+# Flush existing rules
+\${fwcmd} -q -f flush
 
-# ICMPv4 Echo Requests (ping flood protection) + rate limiting (no logging to avoid log exhaustion)
-pass in proto icmp all icmp-type echoreq keep state (max 10/second, overload <icmp_flood_table> flush global)
+#################################
+# Loopback Traffic
+#################################
+# Allow all traffic on the loopback interface (lo0)
+\${fwcmd} add allow ip from any to any via lo0
 
-# ICMPv6 Echo Requests (ping flood protection) + rate limiting (no logging to avoid log exhaustion)
-pass in inet6 proto ipv6-icmp all icmp6-type echoreq keep state (max 10/second, overload <icmp_flood_table> flush global)
+# Deny traffic to and from the IPv4 loopback network (127.0.0.0/8)
+\${fwcmd} add deny ip from any to 127.0.0.0/8
+\${fwcmd} add deny ip from 127.0.0.0/8 to any
 
-# Allow essential ICMPv6 messages (stateless)
-pass in inet6 proto ipv6-icmp icmp6-type 2 no state  # Packet Too Big (PMTUD)
-pass in inet6 proto ipv6-icmp icmp6-type 134 no state # Router Advertisement
-pass in inet6 proto ipv6-icmp icmp6-type 135 no state # Neighbor Solicitation
-pass in inet6 proto ipv6-icmp icmp6-type 136 no state # Neighbor Advertisement
+# IPv6 loopback rules (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    # Deny traffic to and from the IPv6 loopback address (::1)
+    \${fwcmd} add deny ip6 from any to ::1
+    \${fwcmd} add deny ip6 from ::1 to any
+fi
 
-# Allow DHCPv4 (stateful)
-pass in inet proto udp from port 67 to port 68 keep state
+#################################
+# Anti-Spoofing, Recon Prevention, and Fail2Ban Protection
+#################################
+# Drop traffic from the Fail2Ban table
+\${fwcmd} add deny ip from 'table(fail2ban)' to any
 
-# Allow DHCPv6 (stateful)
-pass in inet6 proto udp from port 547 to port 546 keep state
+# IPv6 Fail2Ban drop rules (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add deny ip6 from 'table(fail2ban)' to any
+fi
 
-# Allow outgoing connections initiated from this system (stateful)
-pass out keep state
+# Block packets with IP options to prevent IP spoofing and source routing attacks
+\${fwcmd} add deny ip from any to any ipoptions ssrr,lsrr,rr,ts
+
+# Anti-spoofing: Deny traffic with invalid source addresses (not verifiable via reverse path)
+\${fwcmd} add deny ip from any to any not verrevpath in
+
+# IPv6 anti-spoofing rules (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add deny ip6 from any to any not verrevpath in
+fi
+
+# Block packet fragments (protect against fragmentation-based attacks)
+\${fwcmd} add deny ip from any to any frag
+
+#################################
+# Flood Protection and Traffic Shaping
+#################################
+# Dummynet pipe to limit ICMPv4/ICMPv6 bandwidth
+\${fwcmd} pipe 1 config bw 10Kbit/s
+
+# Limit ICMPv4 echo requests (ping flood protection)
+\${fwcmd} add pipe 1 icmp from any to me icmptypes 8
+
+# IPv6 ICMPv6 echo request (ping flood protection)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add pipe 1 ipv6-icmp from any to me6 icmp6types 128
+fi
+
+#################################
+# IPv6 Network Support (Non-Flood ICMPv6)
+#################################
+# Essential ICMPv6 traffic for Neighbor Discovery, Router Advertisements, PMTUD (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add allow ipv6-icmp from any to any icmp6types 2,133,134,135,136
+fi
+
+#################################
+# Suricata Traffic Diversion
+#################################
+# Divert all traffic to Suricata for inline IPS processing
+\${fwcmd} add divert \$divert_port ip from any to any
+
+# IPv6 Suricata diversion (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add divert \$divert_port ip6 from any to any
+fi
+
+#################################
+# Stateful Traffic Handling
+#################################
+# Check the state of all connections to allow established connections
+\${fwcmd} add check-state
+
+#################################
+# Inbound Traffic (User-Defined Services)
+#################################
+# Allow new SSH connections from allowed source IPs to the firewall
+\${fwcmd} add allow tcp from \$ssh_ips to me \$ssh_port setup limit dst-addr 1
+
+# Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
+\${fwcmd} add allow tcp from any to me 80,443 setup limit src-addr 100
+
+# IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add allow tcp from \$ssh_ips to me6 \$ssh_port setup limit dst-addr 1
+    \${fwcmd} add allow tcp from any to me6 80,443 setup limit src-addr 100
+fi
+
+# Allow DHCPv4 for WAN and LAN
+\${fwcmd} add allow udp from any 67 to me 68 in recv \$ext_if
+\${fwcmd} add allow udp from any 67 to any 68 in recv \$int_if
+
+# Allow DHCPv6 for WAN and LAN (if IPv6 is available)
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add allow udp from any 547 to me6 546 in recv \$ext_if
+    \${fwcmd} add allow udp from any 547 to any 546 in recv \$int_if
+fi
+
+#################################
+# Outbound Traffic
+#################################
+# Allow all outbound IPv4 traffic, with stateful inspection
+\${fwcmd} add allow ip from me to any out keep-state
+
+# Allow all outbound IPv6 traffic (if IPv6 is available), with stateful inspection
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add allow ip6 from me6 to any out keep-state
+fi
+
+#################################
+# Final Rule: Deny all other traffic
+#################################
+# Deny any traffic that hasn't been explicitly allowed
+\${fwcmd} add 65534 deny ip from any to any
 EOF
-  sysrc pf_enable="YES"
-  echo "PF firewall configured to enable at next reboot."
+
+  # Set the firewall to load on boot and specify the rules file
+  sysrc firewall_enable="YES"
+  sysrc firewall_script="/etc/ipfw.rules"
+  sysrc firewall_type="custom" # Indicate that this is a custom firewall
+
+  echo "IPFW firewall with Suricata and Dummynet configured, rules saved to /etc/ipfw.rules, and enabled at boot."
 }
 
 # Secure syslog and configure /tmp cleanup at startup
@@ -506,13 +611,13 @@ main() {
   clear_immutable_flags
   backup_configs
   update_and_install_packages
+  harden_sysctl
+  harden_loader_conf
   configure_ssh
   configure_sudo
   configure_fail2ban
-  configure_pf
   configure_suricata
-  harden_sysctl
-  harden_loader_conf
+  configure_ipfw
   configure_securelevel
   configure_password_and_umask
   secure_syslog_and_tmp
