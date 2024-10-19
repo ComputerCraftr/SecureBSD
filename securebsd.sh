@@ -215,7 +215,7 @@ ipfw:
   - interface: $external_interface
     divert-port: $suricata_port
     threads: auto
-    checksum-checks: auto
+    checksum-checks: no
 
 # Set Suricata to multi-threaded mode (workers) for efficient traffic processing
 runmode: workers
@@ -437,46 +437,49 @@ ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
 \${fwcmd} -q -f flush
 
 #################################
+# Reassemble Fragmented Packets Early
+#################################
+# Reassemble fragmented packets before further processing
+\${fwcmd} add 100 reass all from any to any in
+
+#################################
 # Loopback Traffic
 #################################
 # Allow all traffic on the loopback interface (lo0)
-\${fwcmd} add allow ip from any to any via lo0
+\${fwcmd} add 200 allow ip from any to any via lo0
 
 # Deny traffic to and from the IPv4 loopback network (127.0.0.0/8)
-\${fwcmd} add deny ip from any to 127.0.0.0/8
-\${fwcmd} add deny ip from 127.0.0.0/8 to any
+\${fwcmd} add 300 deny ip from any to 127.0.0.0/8
+\${fwcmd} add 400 deny ip from 127.0.0.0/8 to any
 
 # IPv6 loopback rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
     # Deny traffic to and from the IPv6 loopback address (::1)
-    \${fwcmd} add deny ip6 from any to ::1
-    \${fwcmd} add deny ip6 from ::1 to any
+    \${fwcmd} add 500 deny ip6 from any to ::1
+    \${fwcmd} add 600 deny ip6 from ::1 to any
 fi
 
 #################################
 # Anti-Spoofing, Recon Prevention, and Fail2Ban Protection
 #################################
 # Drop traffic from the Fail2Ban table
-\${fwcmd} add deny ip from 'table(fail2ban)' to any
+\${fwcmd} add 700 deny ip from 'table(fail2ban)' to any
 
 # IPv6 Fail2Ban drop rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add deny ip6 from 'table(fail2ban)' to any
+    \${fwcmd} add 800 deny ip6 from 'table(fail2ban)' to any
 fi
 
 # Block packets with IP options to prevent IP spoofing and source routing attacks
-\${fwcmd} add deny ip from any to any ipoptions ssrr,lsrr,rr,ts
+\${fwcmd} add 900 deny ip from any to any ipoptions ssrr,lsrr,rr,ts
 
 # Anti-spoofing: Deny traffic with invalid source addresses (not verifiable via reverse path)
-\${fwcmd} add deny ip from any to any not verrevpath in
+\${fwcmd} add 1000 deny ip from any to any not verrevpath in
 
 # IPv6 anti-spoofing rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add deny ip6 from any to any not verrevpath in
+    \${fwcmd} add 1100 deny ip6 from any to any not verrevpath in
 fi
-
-# Block packet fragments (protect against fragmentation-based attacks)
-\${fwcmd} add deny ip from any to any frag
 
 #################################
 # Flood Protection and Traffic Shaping
@@ -485,11 +488,11 @@ fi
 \${fwcmd} pipe 1 config bw 10Kbit/s
 
 # Limit ICMPv4 echo requests (ping flood protection)
-\${fwcmd} add pipe 1 icmp from any to me icmptypes 8
+\${fwcmd} add 1200 pipe 1 icmp from any to me icmptypes 8
 
 # IPv6 ICMPv6 echo request (ping flood protection)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add pipe 1 ipv6-icmp from any to me6 icmp6types 128
+    \${fwcmd} add 1300 pipe 1 ipv6-icmp from any to me6 icmp6types 128
 fi
 
 #################################
@@ -497,60 +500,60 @@ fi
 #################################
 # Essential ICMPv6 traffic for Neighbor Discovery, Router Advertisements, PMTUD (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add allow ipv6-icmp from any to any icmp6types 2,133,134,135,136
+    \${fwcmd} add 1400 allow ipv6-icmp from any to any icmp6types 2,133,134,135,136
 fi
 
 #################################
 # Suricata Traffic Diversion
 #################################
 # Divert all traffic to Suricata for inline IPS processing
-\${fwcmd} add divert \$divert_port ip from any to any
+\${fwcmd} add 1500 divert \$divert_port ip from any to any
 
 # IPv6 Suricata diversion (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add divert \$divert_port ip6 from any to any
+    \${fwcmd} add 1600 divert \$divert_port ip6 from any to any
 fi
 
 #################################
 # Stateful Traffic Handling
 #################################
 # Check the state of all connections to allow established connections
-\${fwcmd} add check-state
+\${fwcmd} add 1700 check-state
 
 #################################
 # Inbound Traffic (User-Defined Services)
 #################################
 # Allow new SSH connections from allowed source IPs to the firewall
-\${fwcmd} add allow tcp from \$ssh_ips to me \$ssh_port setup limit dst-addr 1
+\${fwcmd} add 1800 allow tcp from \$ssh_ips to me \$ssh_port setup limit dst-addr 1
 
 # Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
-\${fwcmd} add allow tcp from any to me 80,443 setup limit src-addr 100
+\${fwcmd} add 1900 allow tcp from any to me 80,443 setup limit src-addr 100
 
 # IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add allow tcp from \$ssh_ips to me6 \$ssh_port setup limit dst-addr 1
-    \${fwcmd} add allow tcp from any to me6 80,443 setup limit src-addr 100
+    \${fwcmd} add 2000 allow tcp from \$ssh_ips to me6 \$ssh_port setup limit dst-addr 1
+    \${fwcmd} add 2100 allow tcp from any to me6 80,443 setup limit src-addr 100
 fi
 
 # Allow DHCPv4 for WAN and LAN
-\${fwcmd} add allow udp from any 67 to me 68 in recv \$ext_if
-\${fwcmd} add allow udp from any 67 to any 68 in recv \$int_if
+\${fwcmd} add 2200 allow udp from any 67 to me 68 in recv \$ext_if
+\${fwcmd} add 2300 allow udp from any 67 to any 68 in recv \$int_if
 
 # Allow DHCPv6 for WAN and LAN (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add allow udp from any 547 to me6 546 in recv \$ext_if
-    \${fwcmd} add allow udp from any 547 to any 546 in recv \$int_if
+    \${fwcmd} add 2400 allow udp from any 547 to me6 546 in recv \$ext_if
+    \${fwcmd} add 2500 allow udp from any 547 to any 546 in recv \$int_if
 fi
 
 #################################
 # Outbound Traffic
 #################################
 # Allow all outbound IPv4 traffic, with stateful inspection
-\${fwcmd} add allow ip from me to any out keep-state
+\${fwcmd} add 2600 allow ip from me to any out keep-state
 
 # Allow all outbound IPv6 traffic (if IPv6 is available), with stateful inspection
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add allow ip6 from me6 to any out keep-state
+    \${fwcmd} add 2700 allow ip6 from me6 to any out keep-state
 fi
 
 #################################
