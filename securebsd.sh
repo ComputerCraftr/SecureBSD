@@ -294,25 +294,21 @@ harden_sysctl() {
   echo "Applying sysctl hardening..."
   sysctl_conf="/etc/sysctl.conf"
 
-  # Define the sysctl values to be set
-  sysctl_values=(
-    "net.inet.icmp.icmplim=50"
-    "net.inet.tcp.blackhole=2"
-    "net.inet.udp.blackhole=1"
-    "net.inet.tcp.syncookies=1"
-    "net.inet.tcp.drop_synfin=1"
-    "kern.coredump=0"
-    "kern.randompid=1"
-    "kern.sugid_coredump=0"
-    "security.bsd.see_other_uids=0"
-    "security.bsd.see_other_gids=0"
-    "security.bsd.see_jail_proc=0"
-    "security.bsd.unprivileged_read_msgbuf=0"
-    "security.bsd.unprivileged_proc_debug=0"
-  )
-
-  # Update or append the sysctl values
-  for setting in "${sysctl_values[@]}"; do
+  # Define the sysctl values to be set and loop through them
+  for setting in \
+    "net.inet.icmp.icmplim=50" \
+    "net.inet.tcp.blackhole=2" \
+    "net.inet.udp.blackhole=1" \
+    "net.inet.tcp.syncookies=1" \
+    "net.inet.tcp.drop_synfin=1" \
+    "kern.coredump=0" \
+    "kern.randompid=1" \
+    "kern.sugid_coredump=0" \
+    "security.bsd.see_other_uids=0" \
+    "security.bsd.see_other_gids=0" \
+    "security.bsd.see_jail_proc=0" \
+    "security.bsd.unprivileged_read_msgbuf=0" \
+    "security.bsd.unprivileged_proc_debug=0"; do
     key="${setting%%=*}"
     value="${setting##*=}"
     if grep -q "^${key}" "$sysctl_conf"; then
@@ -330,19 +326,15 @@ harden_loader_conf() {
   echo "Configuring loader.conf for additional kernel security..."
   loader_conf="/boot/loader.conf"
 
-  # Define the loader.conf values to be set
-  loader_values=(
-    'mac_bsdextended_load="YES"'
-    'mac_partition_load="YES"'
-    'mac_portacl_load="YES"'
-    'mac_seeotheruids_load="YES"'
-    'ipfw_load="YES"'
-    'ipdivert_load="YES"'
-    'dummynet_load="YES"'
-  )
-
-  # Update or append the loader.conf values
-  for setting in "${loader_values[@]}"; do
+  # Define the loader.conf values to be set and loop through them
+  for setting in \
+    'mac_bsdextended_load="YES"' \
+    'mac_partition_load="YES"' \
+    'mac_portacl_load="YES"' \
+    'mac_seeotheruids_load="YES"' \
+    'ipfw_load="YES"' \
+    'ipdivert_load="YES"' \
+    'dummynet_load="YES"'; do
     key="${setting%%=*}"
     if grep -q "^${key}" "$loader_conf"; then
       sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
