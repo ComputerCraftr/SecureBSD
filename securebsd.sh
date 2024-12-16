@@ -315,42 +315,31 @@ EOF
 harden_sysctl() {
   echo "Applying sysctl hardening..."
   sysctl_conf="/etc/sysctl.conf"
-  cat <<EOF >$sysctl_conf
-# Limit the number of ICMP redirects and requests
-net.inet.icmp.icmplim=50
 
-# Enable TCP and UDP blackhole
-net.inet.tcp.blackhole=2
-net.inet.udp.blackhole=1
+  # Define the sysctl values to be set and loop through them
+  for setting in \
+    "net.inet.icmp.icmplim=50" \
+    "net.inet.tcp.blackhole=2" \
+    "net.inet.udp.blackhole=1" \
+    "net.inet.tcp.syncookies=1" \
+    "net.inet.tcp.drop_synfin=1" \
+    "net.inet.ip.dummynet.io_fast=1" \
+    "kern.coredump=0" \
+    "kern.randompid=1" \
+    "kern.sugid_coredump=0" \
+    "security.bsd.see_other_uids=0" \
+    "security.bsd.see_other_gids=0" \
+    "security.bsd.see_jail_proc=0" \
+    "security.bsd.unprivileged_read_msgbuf=0" \
+    "security.bsd.unprivileged_proc_debug=0"; do
+    key="${setting%%=*}"
+    if grep -q "^${key}" "$sysctl_conf"; then
+      sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
+    else
+      echo "$setting" >>"$sysctl_conf"
+    fi
+  done
 
-# Enable SYN cookies for SYN flood protection
-net.inet.tcp.syncookies=1
-
-# Drop SYN+FIN packets to prevent stealth attacks
-net.inet.tcp.drop_synfin=1
-
-# Disable core dumps to prevent sensitive data exposure
-kern.coredump=0
-
-# Randomize PID assignment to make process prediction harder
-kern.randompid=1
-
-# Disable core dumps for setuid binaries to prevent exposure of sensitive information
-kern.sugid_coredump=0
-
-# Restrict visibility of processes to the owner only
-security.bsd.see_other_uids=0
-security.bsd.see_other_gids=0
-
-# Restrict jail process visibility
-security.bsd.see_jail_proc=0
-
-# Prevent unprivileged processes from reading kernel message buffers
-security.bsd.unprivileged_read_msgbuf=0
-
-# Prevent unprivileged processes from debugging other processes
-security.bsd.unprivileged_proc_debug=0
-EOF
   echo "System kernel hardened with secure sysctl settings."
 }
 
@@ -358,15 +347,24 @@ EOF
 harden_loader_conf() {
   echo "Configuring loader.conf for additional kernel security..."
   loader_conf="/boot/loader.conf"
-  cat <<EOF >$loader_conf
-mac_bsdextended_load="YES"
-mac_partition_load="YES"
-mac_portacl_load="YES"
-mac_seeotheruids_load="YES"
-ipfw_load="YES"
-ipdivert_load="YES"
-dummynet_load="YES"
-EOF
+
+  # Define the loader.conf values to be set and loop through them
+  for setting in \
+    'mac_bsdextended_load="YES"' \
+    'mac_partition_load="YES"' \
+    'mac_portacl_load="YES"' \
+    'mac_seeotheruids_load="YES"' \
+    'ipfw_load="YES"' \
+    'ipdivert_load="YES"' \
+    'dummynet_load="YES"'; do
+    key="${setting%%=*}"
+    if grep -q "^${key}" "$loader_conf"; then
+      sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
+    else
+      echo "$setting" >>"$loader_conf"
+    fi
+  done
+
   echo "loader.conf hardened with additional kernel security modules."
 }
 
