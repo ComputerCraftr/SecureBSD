@@ -491,14 +491,17 @@ if [ \$ipv6_available -eq 1 ]; then
 fi
 
 # Block packets with IP options to prevent IP spoofing and source routing attacks
-\${fwcmd} add 900 deny ip from any to any ipoptions ssrr,lsrr,rr,ts
+\${fwcmd} add 900 deny log ip from any to any ipoptions ssrr
+\${fwcmd} add 910 deny log ip from any to any ipoptions lsrr
+\${fwcmd} add 920 deny log ip from any to any ipoptions rr
+\${fwcmd} add 930 deny log ip from any to any ipoptions ts
 
 # Anti-spoofing: Deny traffic with invalid source addresses (not verifiable via reverse path)
-\${fwcmd} add 1000 deny ip from any to any not verrevpath in
+\${fwcmd} add 1000 deny log ip from any to any not verrevpath in
 
 # IPv6 anti-spoofing rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 1100 deny ip6 from any to any not verrevpath in
+    \${fwcmd} add 1100 deny log ip6 from any to any not verrevpath in
 fi
 
 #################################
