@@ -74,7 +74,7 @@ reapply_immutable_flags() {
   done
 }
 
-# Collect user input for SSH, IPs, and password expiration settings
+# Collect user input for SSH, IPs, Suricata, and password expiration settings
 collect_user_input() {
   echo "This script will harden your FreeBSD system by securing SSH, enabling firewall rules, configuring automatic updates, and more."
 
@@ -96,10 +96,24 @@ collect_user_input() {
   printf "Enter the admin IPs (comma-separated) for SSH access: "
   read -r admin_ips
 
-  # Suricata interface input
-  printf "Enter the external network interface for IPFW and Suricata (e.g., em0, re0): "
+  # External network interface input (for IPFW and optionally Suricata)
+  printf "Enter the external network interface for IPFW (and Suricata, if installed, e.g., em0, re0): "
   read -r external_interface
   validate_interface "$external_interface"
+
+  # Suricata installation choice
+  echo "Do you want to install and configure Suricata (yes/no)?"
+  printf "Enter your choice (default: yes): "
+  read -r install_suricata
+  install_suricata="${install_suricata:-yes}"
+  if [ "$install_suricata" != "no" ]; then
+    if [ "$install_suricata" != "yes" ]; then
+      echo "Invalid input. Please enter 'yes' or 'no'."
+      return 1
+    fi
+  else
+    suricata_port="disable"
+  fi
 
   # Password expiration input
   echo "Set the password expiration period in days. Type 'disable' to disable expiration (not recommended)."
@@ -127,13 +141,21 @@ backup_configs() {
 
 # Update FreeBSD and install necessary packages (sudo, fail2ban, Suricata)
 update_and_install_packages() {
-  echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban, Suricata)..."
+  echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban)..."
   freebsd-update fetch install
   pkg update
   pkg upgrade -y
-  pkg install -y sudo py311-fail2ban suricata anacron
-  suricata-update
-  echo "System updated and packages installed."
+  pkg install -y sudo py311-fail2ban anacron
+
+  # Install Suricata if the user opted in
+  if [ "$install_suricata" = "yes" ]; then
+    echo "Installing Suricata..."
+    pkg install -y suricata
+    suricata-update
+    echo "Suricata installed and updated."
+  else
+    echo "Skipping Suricata installation."
+  fi
 }
 
 # Configure SSH security settings
@@ -215,7 +237,7 @@ ipfw:
   - interface: $external_interface
     divert-port: $suricata_port
     threads: auto
-    checksum-checks: auto
+    checksum-checks: no
 
 # Set Suricata to multi-threaded mode (workers) for efficient traffic processing
 runmode: workers
@@ -509,14 +531,16 @@ if [ \$ipv6_available -eq 1 ]; then
 fi
 
 #################################
-# Suricata Traffic Diversion
+# Suricata Traffic Diversion (If Enabled)
 #################################
-# Divert all traffic to Suricata for inline IPS processing
-\${fwcmd} add 1600 divert \$divert_port ip from any to any
+if [ "\$divert_port" != "disable" ]; then
+    # Divert all traffic to Suricata for inline IPS processing
+    \${fwcmd} add 1600 divert \$divert_port ip from any to any
 
-# IPv6 Suricata diversion (if IPv6 is available)
-if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 1700 divert \$divert_port ip6 from any to any
+    # IPv6 Suricata diversion (if IPv6 is available)
+    if [ \$ipv6_available -eq 1 ]; then
+        \${fwcmd} add 1700 divert \$divert_port ip6 from any to any
+    fi
 fi
 
 #################################
@@ -590,7 +614,7 @@ secure_syslog_and_tmp() {
 # Configure cron jobs for system updates and suricata-update
 configure_cron_updates() {
   echo "Setting up automatic updates via cron..."
-  if ! grep -q "suricata-update" /etc/crontab; then
+  if [ "$install_suricata" = "yes" ] && ! grep -q "suricata-update" /etc/crontab; then
     echo "0 2 * * 0 root suricata-update" >>/etc/crontab
   fi
   if ! grep -q "freebsd-update cron" /etc/crontab; then
@@ -626,7 +650,9 @@ main() {
   configure_ssh
   configure_sudo
   configure_fail2ban
-  configure_suricata
+  if [ "$install_suricata" = "yes" ]; then
+    configure_suricata
+  fi
   configure_ipfw
   configure_securelevel
   configure_password_and_umask
