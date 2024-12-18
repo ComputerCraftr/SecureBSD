@@ -177,10 +177,10 @@ configure_ssh() {
 
   # Add necessary directives if not present
   if ! grep -q "^AuthenticationMethods publickey,keyboard-interactive" "$sshd_config"; then
-    echo "AuthenticationMethods publickey,keyboard-interactive" >>"$sshd_config"
+    echo "AuthenticationMethods publickey,keyboard-interactive" | tee -a "$sshd_config" >/dev/null
   fi
   if ! grep -q "^AllowUsers $allowed_user" "$sshd_config"; then
-    echo "AllowUsers $allowed_user" >>"$sshd_config"
+    echo "AllowUsers $allowed_user" | tee -a "$sshd_config" >/dev/null
   fi
 
   echo "SSH configured to require public key and Google Authenticator authentication."
@@ -208,10 +208,10 @@ configure_ssh() {
   authorized_keys="/home/$allowed_user/.ssh/authorized_keys"
   if [ ! -f "$authorized_keys" ]; then
     echo "Creating authorized_keys for $allowed_user..."
-    cat "$ssh_key.pub" >"$authorized_keys"
+    cat "$ssh_key.pub" | tee "$authorized_keys" >/dev/null
   else
     echo "authorized_keys already exists for $allowed_user. Appending key if not present..."
-    grep -q -F "$(cat "$ssh_key.pub")" "$authorized_keys" || cat "$ssh_key.pub" >>"$authorized_keys"
+    grep -q -F "$(cat "$ssh_key.pub")" "$authorized_keys" || cat "$ssh_key.pub" | tee -a "$authorized_keys" >/dev/null
   fi
   chmod 600 "$authorized_keys"
   chown "$allowed_user:$allowed_user" "$authorized_keys"
@@ -283,7 +283,7 @@ configure_ssh_pam() {
     END {
       if (!inserted) print ga_line;
     }
-  ' "$pam_sshd_config" >"$pam_sshd_config.tmp" && mv "$pam_sshd_config.tmp" "$pam_sshd_config"
+  ' "$pam_sshd_config" | tee "$pam_sshd_config.tmp" >/dev/null && mv "$pam_sshd_config.tmp" "$pam_sshd_config"
 
   echo "Google Authenticator added to the auth section of PAM SSH configuration."
 }
@@ -326,7 +326,7 @@ configure_sudo() {
     pw groupmod wheel -m "$allowed_user"
   fi
   if [ ! -f /usr/local/etc/sudoers.d/wheel ]; then
-    echo '%wheel ALL=(ALL) ALL' >/usr/local/etc/sudoers.d/wheel
+    echo '%wheel ALL=(ALL) ALL' | tee /usr/local/etc/sudoers.d/wheel >/dev/null
   fi
   echo "Sudo configured for the allowed user in the wheel group."
 }
@@ -342,7 +342,7 @@ configure_suricata() {
   suricata_port="8000" # Define the divert port for IPFW to Suricata
 
   # Create or update the Suricata custom configuration file
-  cat <<EOF >"$suricata_custom_conf"
+  cat <<EOF | tee "$suricata_custom_conf" >/dev/null
 %YAML 1.1
 ---
 # Configure Suricata for inline packet processing via IPFW (IPS mode)
@@ -382,7 +382,7 @@ EOF
 
   # Append the custom configuration to the existing suricata.yaml using the `include` directive
   if ! grep -q "include: $suricata_custom_conf" "$suricata_conf"; then
-    echo "include: $suricata_custom_conf" >>"$suricata_conf"
+    echo "include: $suricata_custom_conf" | tee -a "$suricata_conf" >/dev/null
     echo "Custom Suricata configuration included."
   else
     echo "Custom Suricata configuration is already included."
@@ -390,7 +390,7 @@ EOF
 
   # Add custom Suricata rule for SSH port if not present
   if ! grep -q "port $admin_ssh_port" "$suricata_rules"; then
-    echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
+    echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" | tee -a "$suricata_rules" >/dev/null
     echo "Custom SSH port rule added to Suricata."
   else
     echo "Custom SSH port rule already exists in Suricata."
@@ -410,7 +410,7 @@ EOF
 # Configure Fail2Ban to protect SSH
 configure_fail2ban() {
   echo "Configuring Fail2Ban to protect SSH..."
-  cat <<EOF >/usr/local/etc/fail2ban/jail.local
+  cat <<EOF | tee /usr/local/etc/fail2ban/jail.local >/dev/null
 [sshd]
 enabled = true
 port = $admin_ssh_port
@@ -449,7 +449,7 @@ harden_sysctl() {
     if grep -q "^${key}" "$sysctl_conf"; then
       sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
     else
-      echo "$setting" >>"$sysctl_conf"
+      echo "$setting" | tee -a "$sysctl_conf" >/dev/null
     fi
   done
 
@@ -474,7 +474,7 @@ harden_loader_conf() {
     if grep -q "^${key}" "$loader_conf"; then
       sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
     else
-      echo "$setting" >>"$loader_conf"
+      echo "$setting" | tee -a "$loader_conf" >/dev/null
     fi
   done
 
@@ -510,11 +510,11 @@ configure_password_and_umask() {
       awk -v new_passwordtime="passwordtime=${password_expiration}:" \
         '/^default:/ { flag=1 }
          flag && /passwordtime=/ { sub(/passwordtime=[0-9]+d:/, new_passwordtime); flag=0 }
-         { print; if (!/\\$/) flag=0 }' /etc/login.conf >/tmp/login.conf && mv /tmp/login.conf /etc/login.conf
+         { print; if (!/\\$/) flag=0 }' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null && mv /etc/login.conf.tmp /etc/login.conf
     else
       # Append passwordtime inside the default block
       awk -v new_passwordtime="passwordtime=${password_expiration}:\\" \
-        '/^default:/ { print; print "\t:" new_passwordtime; next }1' /etc/login.conf >/tmp/login.conf && mv /tmp/login.conf /etc/login.conf
+        '/^default:/ { print; print "\t:" new_passwordtime; next }1' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null && mv /etc/login.conf.tmp /etc/login.conf
     fi
   fi
 
@@ -550,7 +550,7 @@ configure_ipfw() {
   echo "Configuring IPFW firewall with Suricata and Dummynet..."
 
   # Create /etc/ipfw.rules with the necessary firewall rules
-  cat <<EOF >/etc/ipfw.rules
+  cat <<EOF | tee /etc/ipfw.rules >/dev/null
 #!/bin/sh
 
 # Define the firewall command
@@ -729,13 +729,13 @@ secure_syslog_and_tmp() {
 configure_cron_updates() {
   echo "Setting up automatic updates via cron..."
   if [ "$install_suricata" = "yes" ] && ! grep -q "suricata-update" /etc/crontab; then
-    echo "0 2 * * 0 root suricata-update" >>/etc/crontab
+    echo "0 2 * * 0 root suricata-update" | tee -a /etc/crontab >/dev/null
   fi
   if ! grep -q "freebsd-update cron" /etc/crontab; then
-    echo "0 3 * * 0 root PAGER=cat freebsd-update cron" >>/etc/crontab
+    echo "0 3 * * 0 root PAGER=cat freebsd-update cron" | tee -a /etc/crontab >/dev/null
   fi
   if ! grep -q "pkg update" /etc/crontab; then
-    echo "0 4 * * 0 root pkg update" >>/etc/crontab
+    echo "0 4 * * 0 root pkg update" | tee -a /etc/crontab >/dev/null
   fi
   echo "Cron jobs for system and Suricata updates configured."
 }
