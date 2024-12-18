@@ -133,19 +133,19 @@ backup_configs() {
   echo "Creating backups of critical configuration files..."
   backup_dir="/etc/backup_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "$backup_dir"
-  for conf_file in /etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config; do
+  for conf_file in /etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd; do
     cp "$conf_file" "$backup_dir"
   done
   echo "Backup completed. Files saved in $backup_dir."
 }
 
-# Update FreeBSD and install necessary packages (sudo, fail2ban, Suricata)
+# Update FreeBSD and install necessary packages (sudo, fail2ban, Suricata, Google Authenticator)
 update_and_install_packages() {
-  echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban)..."
+  echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban, Google Authenticator)..."
   freebsd-update fetch install
   pkg update
   pkg upgrade -y
-  pkg install -y sudo py311-fail2ban anacron
+  pkg install -y sudo py311-fail2ban anacron pam_google_authenticator
 
   # Install Suricata if the user opted in
   if [ "$install_suricata" = "yes" ]; then
@@ -160,50 +160,163 @@ update_and_install_packages() {
 
 # Configure SSH security settings
 configure_ssh() {
-  echo "Configuring SSH security..."
+  echo "Configuring SSH security with public key and Google Authenticator authentication..."
   sshd_config="/etc/ssh/sshd_config"
 
-  # Apply all SSH configuration changes in a single sed command
+  # Apply SSH configuration changes
   sed -i '' -E \
     -e "s/^#?PermitRootLogin .*/PermitRootLogin no/" \
     -e "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" \
-    -e "s/^#?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/" \
+    -e "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/" \
     -e "s/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/" \
-    -e "s/^#?UsePAM .*/UsePAM no/" \
-    -e "s/^#?Port .*/Port $admin_ssh_port/" "$sshd_config"
+    -e "s/^#?UsePAM .*/UsePAM yes/" \
+    -e "s/^#?AuthenticationMethods .*/AuthenticationMethods publickey,keyboard-interactive/" \
+    -e "s/^#?AllowUsers .*/AllowUsers $allowed_user/" \
+    -e "s/^#?Port .*/Port $admin_ssh_port/" \
+    "$sshd_config"
 
-  # Ensure allowed user is listed in the config
-  if grep -q "^AllowUsers" "$sshd_config"; then
-    sed -i '' -E "s/^AllowUsers .*/AllowUsers $allowed_user/" "$sshd_config"
-  else
+  # Add necessary directives if not present
+  if ! grep -q "^AuthenticationMethods publickey,keyboard-interactive" "$sshd_config"; then
+    echo "AuthenticationMethods publickey,keyboard-interactive" >>"$sshd_config"
+  fi
+  if ! grep -q "^AllowUsers $allowed_user" "$sshd_config"; then
     echo "AllowUsers $allowed_user" >>"$sshd_config"
   fi
 
-  echo "SSH configured with updated settings."
+  echo "SSH configured to require public key and Google Authenticator authentication."
 
-  # Generate SSH key for user
-  if [ ! -f /home/"$allowed_user"/.ssh/id_ed25519 ]; then
-    echo "No SSH key found for $allowed_user. Generating new key pair..."
-    sudo -u "$allowed_user" ssh-keygen -t ed25519 -f /home/"$allowed_user"/.ssh/id_ed25519 -N ""
+  # Configure SSH keys for the allowed user
+  ssh_key="/home/$allowed_user/.ssh/id_ed25519"
+
+  # Ensure .ssh directory exists with correct permissions
+  if [ ! -d "/home/$allowed_user/.ssh" ]; then
+    echo "Creating .ssh directory for $allowed_user..."
+    mkdir -p /home/"$allowed_user"/.ssh
+  fi
+  chmod 700 /home/"$allowed_user"/.ssh
+  chown "$allowed_user:$allowed_user" /home/"$allowed_user"/.ssh
+
+  # Check if SSH key already exists
+  if [ ! -f "$ssh_key" ]; then
+    echo "No SSH key found for $allowed_user. Generating a new key pair..."
+    su - "$allowed_user" -c "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
+  else
+    echo "SSH key already exists for $allowed_user: $ssh_key"
   fi
 
-  # Enable public key authentication for user
-  sudo -u "$allowed_user" mkdir -p /home/"$allowed_user"/.ssh
-  sudo -u "$allowed_user" cat /home/"$allowed_user"/.ssh/id_ed25519.pub | sudo tee -a /home/"$allowed_user"/.ssh/authorized_keys >/dev/null
-  chmod 600 /home/"$allowed_user"/.ssh/authorized_keys
-  chown -R "$allowed_user:$allowed_user" /home/"$allowed_user"/.ssh
+  # Set up authorized_keys
+  authorized_keys="/home/$allowed_user/.ssh/authorized_keys"
+  if [ ! -f "$authorized_keys" ]; then
+    echo "Creating authorized_keys for $allowed_user..."
+    cat "$ssh_key.pub" >"$authorized_keys"
+  else
+    echo "authorized_keys already exists for $allowed_user. Appending key if not present..."
+    grep -q -F "$(cat "$ssh_key.pub")" "$authorized_keys" || cat "$ssh_key.pub" >>"$authorized_keys"
+  fi
+  chmod 600 "$authorized_keys"
+  chown "$allowed_user:$allowed_user" "$authorized_keys"
+
   echo "Public key authentication enabled for $allowed_user."
 
-  # Warning: Copy the private key to your local system before rebooting
-  echo "WARNING: You must copy the private key to your local machine before rebooting."
-  echo "To securely transfer the private key, use the following command on your local machine:"
+  # Provide clear instructions for private key management
+  echo ""
+  echo "IMPORTANT: You must securely copy the private key to your local machine before rebooting."
+  echo "To securely transfer the private key, run the following command on your local machine:"
+  echo ""
   echo "scp <username>@<remote_host>:/home/$allowed_user/.ssh/id_ed25519 ~/.ssh/"
   echo ""
-  echo "After copying the private key, delete it from the remote system for security:"
+  echo "After copying the private key, delete it from the remote server for security:"
   echo "ssh <username>@<remote_host> 'rm /home/$allowed_user/.ssh/id_ed25519'"
   echo ""
   echo "Ensure the permissions for the private key on your local machine are set correctly with:"
   echo "chmod 600 ~/.ssh/id_ed25519"
+  echo ""
+
+  # Pause and wait for user confirmation
+  echo "Press ENTER to confirm you have securely copied the private key and are ready to proceed."
+  read -r _dummy_variable
+}
+
+# Configure PAM security settings
+configure_ssh_pam() {
+  echo "Configuring SSH PAM for Google Authenticator..."
+  pam_sshd_config="/etc/pam.d/sshd"
+  ga_pam_line="auth required pam_google_authenticator.so"
+
+  # Check if pam_google_authenticator.so is already present
+  if grep -q "^$ga_pam_line" "$pam_sshd_config"; then
+    echo "Google Authenticator is already enabled in PAM SSH configuration."
+    return
+  fi
+
+  # Replace pam_unix.so or insert pam_google_authenticator.so at the correct position
+  awk -v ga_line="$ga_pam_line" '
+    BEGIN {
+      inserted = 0;
+    }
+    {
+      # Remove leading whitespace for easier processing
+      line = $0; gsub(/^[ \t]+/, "", line);
+    }
+    # Detect auth section lines
+    /^auth/ {
+      if (line ~ /pam_unix\.so/ && !inserted) {
+        # Replace pam_unix.so with pam_google_authenticator.so
+        print ga_line;
+        inserted = 1;
+        next;
+      }
+      if (!inserted && line ~ /(sufficient|requisite|binding)/) {
+        # Insert Google Authenticator before terminal rules
+        print ga_line;
+        inserted = 1;
+      }
+    }
+    # Detect transitions to other sections and insert before them
+    /^(account|password|session)/ && !inserted {
+      print ga_line;
+      inserted = 1;
+    }
+    # Print the current line
+    { print }
+    # Append at the end if not yet inserted
+    END {
+      if (!inserted) print ga_line;
+    }
+  ' "$pam_sshd_config" >"$pam_sshd_config.tmp" && mv "$pam_sshd_config.tmp" "$pam_sshd_config"
+
+  echo "Google Authenticator added to the auth section of PAM SSH configuration."
+}
+
+# Configure Google Authenticator TOTP for the allowed user
+configure_google_auth() {
+  echo "Configuring Google Authenticator TOTP for the allowed user..."
+
+  # Define the configuration file path
+  ga_config="/home/$allowed_user/.google_authenticator"
+
+  # Run google-authenticator as the allowed user with secure options
+  su - "$allowed_user" -c "google-authenticator -t -d -r 1 -R 30 -W -s '$ga_config'"
+
+  # Secure permissions on the .google_authenticator file
+  chmod 600 "$ga_config"
+  chown "$allowed_user:$allowed_user" "$ga_config"
+
+  # Provide clear instructions for the user
+  echo ""
+  echo "Google Authenticator TOTP configuration is complete."
+  echo "IMPORTANT: Copy and securely store the following details:"
+  echo "1. Your secret key (used to set up TOTP in your app)."
+  echo "2. Emergency scratch codes (for recovery if your TOTP device is unavailable)."
+  echo ""
+  echo "Without these details, you may lose access to this system."
+  echo ""
+  echo "You can always re-run this script to regenerate a new secret key, but doing so will invalidate any previously configured TOTP apps."
+  echo ""
+
+  # Pause and wait for user confirmation
+  echo "Press ENTER to confirm you have securely saved the secret key and scratch codes."
+  read -r _dummy_variable
 }
 
 # Configure sudo for the allowed user
@@ -646,19 +759,21 @@ main() {
   clear_immutable_flags
   backup_configs
   update_and_install_packages
+  configure_password_and_umask
   harden_sysctl
   harden_loader_conf
   configure_ssh
+  configure_ssh_pam
+  configure_google_auth
   configure_sudo
   configure_fail2ban
   if [ "$install_suricata" = "yes" ]; then
     configure_suricata
   fi
   configure_ipfw
-  configure_securelevel
-  configure_password_and_umask
   secure_syslog_and_tmp
   configure_cron_updates
+  configure_securelevel
   lock_down_system
   echo "Security hardening complete. Please reboot to apply all changes."
 }
