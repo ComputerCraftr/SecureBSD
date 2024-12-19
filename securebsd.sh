@@ -707,7 +707,6 @@ EOF
   sysrc firewall_script="/etc/ipfw.rules"
   sysrc firewall_type="custom" # Indicate that this is a custom firewall
   sysrc firewall_logging="YES" # Enable firewall logging
-  sysrc firewall_iflog="YES"
 
   echo "IPFW firewall with Suricata and Dummynet configured, rules saved to /etc/ipfw.rules, and enabled at boot."
 }
