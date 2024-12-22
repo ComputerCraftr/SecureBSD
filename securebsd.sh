@@ -9,7 +9,7 @@ full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
-service_related_files="/etc/rc.conf /etc/crontab /usr/local/etc/anacrontab"
+service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
 audit_log_files="/var/log /var/audit"
 other_sensitive_files="/etc/ftpusers"
 sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files $other_sensitive_files"
@@ -730,17 +730,53 @@ secure_syslog_and_tmp() {
 
 # Configure cron jobs for system updates and suricata-update
 configure_cron_updates() {
-  echo "Setting up automatic updates via cron..."
-  if [ "$install_suricata" = "yes" ] && ! grep -q "suricata-update" /etc/crontab; then
-    echo "0 2 * * 0 root suricata-update" | tee -a /etc/crontab >/dev/null
+  echo "Setting up automatic updates via cron for the root user..."
+
+  # Fetch the current root crontab
+  current_crontab=$(crontab -l 2>/dev/null || true)
+
+  # Define cron jobs
+  suricata_cron="0 2 * * 0 suricata-update"
+  freebsd_update_cron="0 3 * * 0 PAGER=cat freebsd-update cron"
+  pkg_update_cron="0 4 * * 0 pkg update -y && pkg upgrade -y"
+
+  # Temporary file to store updated crontab, specify /tmp directory explicitly
+  temp_crontab=$(mktemp /tmp/root_crontab.XXXXXX)
+
+  # Write the existing crontab to the temporary file
+  echo "$current_crontab" | tee "$temp_crontab" >/dev/null
+
+  # Add Suricata update cron job if applicable
+  if [ "$install_suricata" = "yes" ] && ! echo "$current_crontab" | grep -qF "suricata-update"; then
+    echo "$suricata_cron" | tee -a "$temp_crontab" >/dev/null
+    echo "Added Suricata update cron job."
+  else
+    echo "Suricata update cron job already exists or not applicable. Skipping..."
   fi
-  if ! grep -q "freebsd-update cron" /etc/crontab; then
-    echo "0 3 * * 0 root PAGER=cat freebsd-update cron" | tee -a /etc/crontab >/dev/null
+
+  # Add FreeBSD update cron job if not already present
+  if ! echo "$current_crontab" | grep -qF "freebsd-update cron"; then
+    echo "$freebsd_update_cron" | tee -a "$temp_crontab" >/dev/null
+    echo "Added FreeBSD update cron job."
+  else
+    echo "FreeBSD update cron job already exists. Skipping..."
   fi
-  if ! grep -q "pkg update" /etc/crontab; then
-    echo "0 4 * * 0 root pkg update" | tee -a /etc/crontab >/dev/null
+
+  # Add pkg update cron job if not already present
+  if ! echo "$current_crontab" | grep -qF "pkg update"; then
+    echo "$pkg_update_cron" | tee -a "$temp_crontab" >/dev/null
+    echo "Added pkg update cron job."
+  else
+    echo "pkg update cron job already exists. Skipping..."
   fi
-  echo "Cron jobs for system and Suricata updates configured."
+
+  # Install the updated crontab
+  crontab "$temp_crontab"
+
+  # Clean up the temporary file
+  rm "$temp_crontab"
+
+  echo "Cron jobs for system and Suricata updates configured for the root user."
 }
 
 # Lock down sensitive system files
