@@ -635,7 +635,7 @@ fi
 # ICMP and ICMPv6 Rules for PMTUD and Network Functionality
 #################################
 # Allow ICMPv4 Destination Unreachable and Time Exceeded
-\${fwcmd} add 1600 allow icmp from any to any icmptypes 3,11 in
+\${fwcmd} add 1600 allow icmp from any to any icmptype 3,11 in
 \${fwcmd} add 1700 allow icmp from any to any out
 
 # Allow ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded, and RA
@@ -651,11 +651,17 @@ fi
 \${fwcmd} pipe 1 config bw 100Kbit/s
 
 # Limit ICMPv4 echo requests and replies (ping flood protection)
-\${fwcmd} add 2000 pipe 1 icmp from any to any icmptypes 8,0 in
+\${fwcmd} add 2000 pipe 1 icmp from any to any icmptype 8,0 in
 
 # IPv6 ICMPv6 echo requests and replies (ping flood protection)
 if [ \$ipv6_available -eq 1 ]; then
     \${fwcmd} add 2100 pipe 1 icmp6 from any to any icmp6type 128,129 in
+fi
+
+# Deny all other ICMPv4 and ICMPv6 traffic
+\${fwcmd} add 2200 deny log icmp from any to any in
+if [ \$ipv6_available -eq 1 ]; then
+    \${fwcmd} add 2300 deny log icmp6 from any to any in
 fi
 
 #################################
@@ -663,45 +669,45 @@ fi
 #################################
 if [ "\$divert_port" != "disable" ]; then
     # Divert all traffic to Suricata for inline IPS processing
-    \${fwcmd} add 2200 divert \$divert_port ip from any to any
+    \${fwcmd} add 2400 divert \$divert_port ip from any to any
 fi
 
 #################################
 # Stateful Traffic Handling
 #################################
 # Check the state of all connections to allow established connections
-\${fwcmd} add 2300 check-state
+\${fwcmd} add 2500 check-state
 
 #################################
 # Inbound Traffic (User-Defined Services)
 #################################
 # Allow new SSH connections from allowed source IPs to the firewall
-\${fwcmd} add 2400 allow tcp from \$ssh_ips to me \$ssh_port setup in limit dst-addr 2
+\${fwcmd} add 2600 allow tcp from \$ssh_ips to me \$ssh_port setup in limit dst-addr 2
 
 # Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
-\${fwcmd} add 2500 allow tcp from any to me 80,443 setup in limit src-addr 100
+\${fwcmd} add 2700 allow tcp from any to me 80,443 setup in limit src-addr 100
 
 # IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 2600 allow tcp from \$ssh_ips to me6 \$ssh_port setup in limit dst-addr 2
-    \${fwcmd} add 2700 allow tcp from any to me6 80,443 setup in limit src-addr 100
+    \${fwcmd} add 2800 allow tcp from \$ssh_ips to me6 \$ssh_port setup in limit dst-addr 2
+    \${fwcmd} add 2900 allow tcp from any to me6 80,443 setup in limit src-addr 100
 fi
 
 # Allow DHCPv4 for WAN and LAN
-\${fwcmd} add 2800 allow udp from any 67 to me 68 in recv \$ext_if keep-state
-\${fwcmd} add 2900 allow udp from any 67 to any 68 in recv \$int_if keep-state
+\${fwcmd} add 3000 allow udp from any 67 to me 68 in recv \$ext_if keep-state
+\${fwcmd} add 3100 allow udp from any 67 to any 68 in recv \$int_if keep-state
 
 # Allow DHCPv6 for WAN and LAN (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 3000 allow udp from any 547 to me6 546 in recv \$ext_if keep-state
-    \${fwcmd} add 3100 allow udp from any 547 to any 546 in recv \$int_if keep-state
+    \${fwcmd} add 3200 allow udp from any 547 to me6 546 in recv \$ext_if keep-state
+    \${fwcmd} add 3300 allow udp from any 547 to any 546 in recv \$int_if keep-state
 fi
 
 #################################
 # Outbound Traffic
 #################################
 # Allow all outbound traffic, with stateful inspection
-\${fwcmd} add 3200 allow ip from any to any out keep-state
+\${fwcmd} add 3400 allow ip from any to any out keep-state
 
 #################################
 # Final Rule: Deny all other traffic
