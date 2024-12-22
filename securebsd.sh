@@ -216,10 +216,10 @@ configure_ssh() {
   authorized_keys="/home/$allowed_user/.ssh/authorized_keys"
   if [ ! -f "$authorized_keys" ]; then
     echo "Creating authorized_keys for $allowed_user..."
-    cat "$ssh_key.pub" | tee "$authorized_keys" >/dev/null
+    tee "$authorized_keys" <"$ssh_key.pub" >/dev/null
   else
     echo "authorized_keys already exists for $allowed_user. Appending key if not present..."
-    grep -q -F "$(cat "$ssh_key.pub")" "$authorized_keys" || cat "$ssh_key.pub" | tee -a "$authorized_keys" >/dev/null
+    grep -q -F "$(cat "$ssh_key.pub")" "$authorized_keys" || tee -a "$authorized_keys" <"$ssh_key.pub" >/dev/null
   fi
   chmod 600 "$authorized_keys"
   chown "$allowed_user:$allowed_user" "$authorized_keys"
@@ -700,7 +700,7 @@ fi
 #################################
 # Outbound Traffic
 #################################
-# Allow all outbound IPv4 traffic, with stateful inspection
+# Allow all outbound traffic, with stateful inspection
 \${fwcmd} add 3200 allow ip from any to any out keep-state
 
 #################################
