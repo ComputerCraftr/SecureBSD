@@ -418,6 +418,9 @@ EOF
 # Configure Fail2Ban to protect SSH
 configure_fail2ban() {
   echo "Configuring Fail2Ban to protect SSH..."
+
+  # Configure Fail2Ban jail
+  echo "Creating Fail2Ban jail.local for SSH..."
   cat <<EOF | tee /usr/local/etc/fail2ban/jail.local >/dev/null
 [sshd]
 enabled = true
@@ -427,9 +430,14 @@ logpath = /var/log/auth.log
 maxretry = 3
 bantime = 3600  # 1 hour ban
 findtime = 600  # 10 minutes window to track failed attempts
+action = bsd-ipfw[table=fail2ban]
 EOF
+
+  # Enable Fail2Ban service
+  echo "Enabling Fail2Ban service..."
   sysrc fail2ban_enable="YES"
-  echo "Fail2Ban configured to enable at next reboot."
+
+  echo "Fail2Ban configuration completed. Restart the service to apply changes."
 }
 
 # Harden system kernel with sysctl settings
@@ -619,6 +627,9 @@ fi
 #################################
 # Anti-Spoofing, Recon Prevention, and Fail2Ban Protection
 #################################
+# Table to hold banned IPs
+\${fwcmd} table fail2ban create type addr
+
 # Drop traffic from the Fail2Ban table
 \${fwcmd} add 1300 deny log ip from 'table(fail2ban)' to any
 
