@@ -195,34 +195,59 @@ configure_ssh() {
 
   # Configure SSH keys for the allowed user
   ssh_key="/home/$allowed_user/.ssh/id_ed25519"
+  ssh_pub_key="${ssh_key}.pub"
+  authorized_keys="/home/$allowed_user/.ssh/authorized_keys"
 
   # Ensure .ssh directory exists with correct permissions
   if [ ! -d "/home/$allowed_user/.ssh" ]; then
     echo "Creating .ssh directory for $allowed_user..."
-    mkdir -p /home/"$allowed_user"/.ssh
+    mkdir -p "/home/$allowed_user/.ssh"
   fi
-  chmod 700 /home/"$allowed_user"/.ssh
-  chown "$allowed_user:$allowed_user" /home/"$allowed_user"/.ssh
 
-  # Check if SSH key already exists
-  if [ ! -f "$ssh_key" ]; then
+  # Always enforce correct permissions on .ssh directory
+  chmod 700 "/home/$allowed_user/.ssh"
+  chown "$allowed_user:$allowed_user" "/home/$allowed_user/.ssh"
+
+  # Check for any existing SSH key pairs in the .ssh directory
+  if [ -f "$ssh_key" ] || [ -f "$ssh_pub_key" ]; then
+    echo "SSH key pair already exists for $allowed_user."
+  else
     echo "No SSH key found for $allowed_user. Generating a new key pair..."
     su - "$allowed_user" -c "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
-  else
-    echo "SSH key already exists for $allowed_user: $ssh_key"
   fi
 
   # Set up authorized_keys
-  authorized_keys="/home/$allowed_user/.ssh/authorized_keys"
   if [ ! -f "$authorized_keys" ]; then
     echo "Creating authorized_keys for $allowed_user..."
-    tee "$authorized_keys" <"$ssh_key.pub" >/dev/null
+    if [ -f "$ssh_pub_key" ]; then
+      tee "$authorized_keys" <"$ssh_pub_key" >/dev/null
+    else
+      echo "Public key not found. Ensure a key pair exists before running this script."
+      return 1
+    fi
   else
-    echo "authorized_keys already exists for $allowed_user. Appending key if not present..."
-    grep -q -F "$(cat "$ssh_key.pub")" "$authorized_keys" || tee -a "$authorized_keys" <"$ssh_key.pub" >/dev/null
+    echo "authorized_keys already exists for $allowed_user. Checking if the public key is present..."
+    if ! grep -qF "$(cat "$ssh_pub_key")" "$authorized_keys"; then
+      echo "Adding missing public key to authorized_keys."
+      tee -a "$authorized_keys" <"$ssh_pub_key" >/dev/null
+    else
+      echo "Public key already exists in authorized_keys."
+    fi
   fi
+
+  # Always enforce correct permissions on authorized_keys
   chmod 600 "$authorized_keys"
   chown "$allowed_user:$allowed_user" "$authorized_keys"
+
+  # Enforce correct permissions on all SSH key files
+  if [ -f "$ssh_key" ]; then
+    chmod 600 "$ssh_key"
+    chown "$allowed_user:$allowed_user" "$ssh_key"
+  fi
+  if [ -f "$ssh_pub_key" ]; then
+    chmod 644 "$ssh_pub_key"
+    chown "$allowed_user:$allowed_user" "$ssh_pub_key"
+  fi
 
   echo "Public key authentication enabled for $allowed_user."
 
