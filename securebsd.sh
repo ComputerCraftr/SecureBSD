@@ -174,7 +174,7 @@ configure_ssh() {
     -e "s/^#?AllowUsers .*/AllowUsers $allowed_user/" \
     -e "s/^#?Port .*/Port $admin_ssh_port/" \
     -e "s/^#?ClientAliveInterval .*/ClientAliveInterval 60/" \
-    -e "s/^#?ClientAliveCountMax .*/ClientAliveCountMax 10/" \
+    -e "s/^#?ClientAliveCountMax .*/ClientAliveCountMax 1/" \
     "$sshd_config"
 
   # Add necessary directives if not present
@@ -187,8 +187,8 @@ configure_ssh() {
   if ! grep -q "^ClientAliveInterval 60" "$sshd_config"; then
     echo "ClientAliveInterval 60" | tee -a "$sshd_config" >/dev/null
   fi
-  if ! grep -q "^ClientAliveCountMax 10" "$sshd_config"; then
-    echo "ClientAliveCountMax 10" | tee -a "$sshd_config" >/dev/null
+  if ! grep -q "^ClientAliveCountMax 1" "$sshd_config"; then
+    echo "ClientAliveCountMax 1" | tee -a "$sshd_config" >/dev/null
   fi
 
   echo "SSH configured to require public key and Google Authenticator authentication and disconnect inactive sessions."
