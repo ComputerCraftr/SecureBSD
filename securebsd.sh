@@ -684,7 +684,7 @@ fi
 # Flood Protection and Traffic Shaping
 #################################
 # Dummynet pipe to limit ICMPv4/ICMPv6 bandwidth
-\${fwcmd} pipe 1 config bw 100Kbit/s
+\${fwcmd} pipe 1 config bw 100Kbit/s queue 1 droptail
 
 # Limit ICMPv4 echo requests and replies (ping flood protection)
 \${fwcmd} add 2000 pipe 1 icmp from any to any icmptype 8,0 in
@@ -717,26 +717,32 @@ fi
 #################################
 # Inbound Traffic (User-Defined Services)
 #################################
+# Dummynet pipe to limit IPv4 bandwidth
+\${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
+
 # Allow new SSH connections from allowed source IPs to the firewall
-\${fwcmd} add 2600 allow tcp from \$ssh_ips to me \$ssh_port setup in limit dst-addr 2
+\${fwcmd} add 2600 pipe 2 tcp from \$ssh_ips to me \$ssh_port ip4 setup in limit dst-addr 2
 
 # Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
-\${fwcmd} add 2700 allow tcp from any to me 80,443 setup in limit src-addr 100
+\${fwcmd} add 2700 pipe 2 tcp from any to me 80,443 ip4 setup in limit src-addr 10
 
 # IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 2800 allow tcp from \$ssh_ips to me6 \$ssh_port setup in limit dst-addr 2
-    \${fwcmd} add 2900 allow tcp from any to me6 80,443 setup in limit src-addr 100
+    # Dummynet pipe to limit IPv6 bandwidth
+    \${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
+
+    \${fwcmd} add 2800 pipe 3 tcp from \$ssh_ips to me6 \$ssh_port ip6 setup in limit dst-addr 2
+    \${fwcmd} add 2900 pipe 3 tcp from any to me6 80,443 ip6 setup in limit src-addr 10
 fi
 
 # Allow DHCPv4 for WAN and LAN
-\${fwcmd} add 3000 allow udp from any 67 to me 68 in recv \$ext_if keep-state
-\${fwcmd} add 3100 allow udp from any 67 to any 68 in recv \$int_if keep-state
+\${fwcmd} add 3000 allow udp from any 67 to me 68 ip4 in recv \$ext_if keep-state
+\${fwcmd} add 3100 allow udp from any 67 to any 68 ip4 in recv \$int_if keep-state
 
 # Allow DHCPv6 for WAN and LAN (if IPv6 is available)
 if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 3200 allow udp from any 547 to me6 546 in recv \$ext_if keep-state
-    \${fwcmd} add 3300 allow udp from any 547 to any 546 in recv \$int_if keep-state
+    \${fwcmd} add 3200 allow udp from any 547 to me6 546 ip6 in recv \$ext_if keep-state
+    \${fwcmd} add 3300 allow udp from any 547 to any 546 ip6 in recv \$int_if keep-state
 fi
 
 #################################
