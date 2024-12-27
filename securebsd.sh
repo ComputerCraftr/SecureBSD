@@ -593,7 +593,8 @@ configure_ipfw() {
   echo "Configuring IPFW firewall with Suricata and Dummynet..."
 
   # Create /etc/ipfw.rules with the necessary firewall rules
-  cat <<EOF | tee /etc/ipfw.rules >/dev/null
+  ipfw_rules="/etc/ipfw.rules"
+  cat <<EOF | tee "$ipfw_rules" >/dev/null
 #!/bin/sh
 
 # Define the firewall command
@@ -610,7 +611,7 @@ ssh_port="$admin_ssh_port"    # SSH port to allow
 ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
 
 # Flush existing rules
-\${fwcmd} -q -f flush
+\${fwcmd} -q flush
 
 #################################
 # Loopback and IPv6 Traffic
@@ -623,7 +624,7 @@ ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
 \${fwcmd} add 300 deny ip from 127.0.0.0/8 to any
 
 # IPv6 loopback and network functionality rules (if IPv6 is available)
-if [ \$ipv6_available -eq 1 ]; then
+if [ "\$ipv6_available" -eq 1 ]; then
     # Deny traffic to and from the IPv6 loopback address (::1)
     \${fwcmd} add 400 deny ip from any to ::1
     \${fwcmd} add 500 deny ip from ::1 to any
@@ -632,17 +633,17 @@ if [ \$ipv6_available -eq 1 ]; then
     \${fwcmd} add 600 deny log ip6 from any to any ext6hdr rthdr0
 
     # Deny fragmented ICMPv6 Neighbor Discovery Protocol (NDP) packets to prevent DoS attacks (RFC6980)
-    \${fwcmd} add 700 deny log icmp6 from any to any ext6hdr frag icmp6type 130,131,132,133,134,135,136,143
+    \${fwcmd} add 700 deny log ipv6-icmp from any to any ext6hdr frag icmp6types 130,131,132,133,134,135,136,143
 
     # Allow IPv6 Duplicate Address Detection (DAD) packets
-    \${fwcmd} add 800 allow icmp6 from :: to ff02::/16
+    \${fwcmd} add 800 allow ipv6-icmp from :: to ff02::/16
 
     # Allow ICMPv6 Router Solicitation (RS), Router Advertisement (RA), Neighbor Solicitation (NS), and Neighbor Advertisement (NA) for link-local traffic
-    \${fwcmd} add 900 allow icmp6 from fe80::/10 to fe80::/10
-    \${fwcmd} add 1000 allow icmp6 from fe80::/10 to ff02::/16
+    \${fwcmd} add 900 allow ipv6-icmp from fe80::/10 to fe80::/10
+    \${fwcmd} add 1000 allow ipv6-icmp from fe80::/10 to ff02::/16
 
     # Allow ICMPv6 Neighbor Solicitation (NS) and Neighbor Advertisement (NA) for address resolution (unicast, link-local, and multicast)
-    \${fwcmd} add 1100 allow icmp6 from any to any icmp6type 135,136
+    \${fwcmd} add 1100 allow ipv6-icmp from any to any icmp6types 135,136
 fi
 
 #################################
@@ -655,7 +656,7 @@ fi
 # Anti-Spoofing, Recon Prevention, and Fail2Ban Protection
 #################################
 # Table to hold banned IPs
-\${fwcmd} table fail2ban create type addr
+\${fwcmd} table fail2ban create or-flush type addr
 
 # Drop traffic from the Fail2Ban table
 \${fwcmd} add 1300 deny log ip from 'table(fail2ban)' to any
@@ -670,16 +671,20 @@ fi
 \${fwcmd} add 1500 deny log ip from any to any not verrevpath in
 
 #################################
-# ICMP and ICMPv6 Rules for PMTUD and Network Functionality
+# ICMP and ICMPv6 Rules for Network Functionality
 #################################
 # Allow ICMPv4 Destination Unreachable and Time Exceeded
-\${fwcmd} add 1600 allow icmp from any to any icmptype 3,11 in
+\${fwcmd} add 1600 allow icmp from any to any icmptypes 3,11 in
+
+# Allow all ICMPv4 outbound
 \${fwcmd} add 1700 allow icmp from any to any out
 
 # Allow ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded, and RA
-if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 1800 allow icmp6 from any to any icmp6type 1,2,3,133,134 in
-    \${fwcmd} add 1900 allow icmp6 from any to any out
+if [ "\$ipv6_available" -eq 1 ]; then
+    \${fwcmd} add 1800 allow ipv6-icmp from any to any icmp6types 1,2,3,133,134 in
+
+    # Allow all ICMPv6 outbound
+    \${fwcmd} add 1900 allow ipv6-icmp from any to any out
 fi
 
 #################################
@@ -689,17 +694,17 @@ fi
 \${fwcmd} pipe 1 config bw 100Kbit/s queue 1 droptail
 
 # Limit ICMPv4 echo requests and replies (ping flood protection)
-\${fwcmd} add 2000 pipe 1 icmp from any to any icmptype 8,0 in
+\${fwcmd} add 2000 pipe 1 icmp from any to any icmptypes 8,0 in
 
 # IPv6 ICMPv6 echo requests and replies (ping flood protection)
-if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 2100 pipe 1 icmp6 from any to any icmp6type 128,129 in
+if [ "\$ipv6_available" -eq 1 ]; then
+    \${fwcmd} add 2100 pipe 1 ipv6-icmp from any to any icmp6types 128,129 in
 fi
 
 # Deny all other ICMPv4 and ICMPv6 traffic
 \${fwcmd} add 2200 deny log icmp from any to any in
-if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 2300 deny log icmp6 from any to any in
+if [ "\$ipv6_available" -eq 1 ]; then
+    \${fwcmd} add 2300 deny log ipv6-icmp from any to any in
 fi
 
 #################################
@@ -723,28 +728,28 @@ fi
 \${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
 
 # Allow new SSH connections from allowed source IPs to the firewall
-\${fwcmd} add 2600 pipe 2 tcp from \$ssh_ips to me \$ssh_port ip4 setup in limit dst-addr 2
+\${fwcmd} add 2600 pipe 2 ip4 from \$ssh_ips to me \$ssh_port proto tcp setup in limit dst-addr 2
 
 # Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
-\${fwcmd} add 2700 pipe 2 tcp from any to me 80,443 ip4 setup in limit src-addr 10
+\${fwcmd} add 2700 pipe 2 ip4 from any to me 80,443 proto tcp setup in limit src-addr 10
 
 # IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
-if [ \$ipv6_available -eq 1 ]; then
+if [ "\$ipv6_available" -eq 1 ]; then
     # Dummynet pipe to limit IPv6 bandwidth
     \${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
 
-    \${fwcmd} add 2800 pipe 3 tcp from \$ssh_ips to me6 \$ssh_port ip6 setup in limit dst-addr 2
-    \${fwcmd} add 2900 pipe 3 tcp from any to me6 80,443 ip6 setup in limit src-addr 10
+    \${fwcmd} add 2800 pipe 3 ip6 from \$ssh_ips to me6 \$ssh_port proto tcp setup in limit dst-addr 2
+    \${fwcmd} add 2900 pipe 3 ip6 from any to me6 80,443 proto tcp setup in limit src-addr 10
 fi
 
 # Allow DHCPv4 for WAN and LAN
-\${fwcmd} add 3000 allow udp from any 67 to me 68 ip4 in recv \$ext_if keep-state
-\${fwcmd} add 3100 allow udp from any 67 to any 68 ip4 in recv \$int_if keep-state
+\${fwcmd} add 3000 allow ip4 from any 67 to me 68 proto udp in recv \$ext_if keep-state
+\${fwcmd} add 3100 allow ip4 from any 67 to any 68 proto udp in recv \$int_if keep-state
 
 # Allow DHCPv6 for WAN and LAN (if IPv6 is available)
-if [ \$ipv6_available -eq 1 ]; then
-    \${fwcmd} add 3200 allow udp from any 547 to me6 546 ip6 in recv \$ext_if keep-state
-    \${fwcmd} add 3300 allow udp from any 547 to any 546 ip6 in recv \$int_if keep-state
+if [ "\$ipv6_available" -eq 1 ]; then
+    \${fwcmd} add 3200 allow ip6 from any 547 to me6 546 proto udp in recv \$ext_if keep-state
+    \${fwcmd} add 3300 allow ip6 from any 547 to any 546 proto udp in recv \$int_if keep-state
 fi
 
 #################################
@@ -762,11 +767,11 @@ EOF
 
   # Set the firewall to load on boot and specify the rules file
   sysrc firewall_enable="YES"
-  sysrc firewall_script="/etc/ipfw.rules"
+  sysrc firewall_script="$ipfw_rules"
   sysrc firewall_type="custom" # Indicate that this is a custom firewall
   sysrc firewall_logging="YES" # Enable firewall logging
 
-  echo "IPFW firewall with Suricata and Dummynet configured, rules saved to /etc/ipfw.rules, and enabled at boot."
+  echo "IPFW firewall with Suricata and Dummynet configured, rules saved to $ipfw_rules, and enabled at boot."
 }
 
 # Secure syslog and configure /tmp cleanup at startup
