@@ -5,7 +5,7 @@ set -eu
 
 # Define file variables for system hardening (chflags schg)
 service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
@@ -46,11 +46,9 @@ validate_interface() {
 
 # Validate password expiration input
 validate_password_expiration() {
-  if [ "$1" != "disable" ]; then
-    if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -le 0 ]; then
-      echo "Error: Invalid password expiration '$1'. Must be a positive integer or 'disable'."
-      return 1
-    fi
+  if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -le 0 ]; then
+    echo "Error: Invalid password expiration '$1'. Days must be a positive integer."
+    return 1
   fi
 }
 
@@ -111,19 +109,19 @@ collect_user_input() {
       echo "Invalid input. Please enter 'yes' or 'no'."
       return 1
     fi
+    suricata_port="${suricata_port:-8000}" # Define the divert port for IPFW to Suricata
+    validate_port "$suricata_port"
   else
-    suricata_port="disable"
+    suricata_port="none"
   fi
 
   # Password expiration input
-  echo "Set the password expiration period in days. Type 'disable' to disable expiration (not recommended)."
+  echo "Set the password expiration period in days. Type 'none' to disable expiration (not recommended)."
   printf "Enter the password expiration period in days (default: 120): "
   read -r password_expiration
   password_expiration="${password_expiration:-120}"
-  validate_password_expiration "$password_expiration"
-  if [ "$password_expiration" = "disable" ]; then
-    password_expiration="no password expiration"
-  else
+  if [ "$password_expiration" != "none" ]; then
+    validate_password_expiration "$password_expiration"
     password_expiration="${password_expiration}d"
   fi
 }
@@ -164,56 +162,61 @@ configure_ssh() {
   sshd_config="/etc/ssh/sshd_config"
 
   # Apply SSH configuration changes
+  authentication_methods="AuthenticationMethods publickey,keyboard-interactive"
+  allow_users="AllowUsers $allowed_user"
+  client_alive_interval="ClientAliveInterval 60"
+  client_alive_count_max="ClientAliveCountMax 1"
   sed -i '' -E \
     -e "s/^#?PermitRootLogin .*/PermitRootLogin no/" \
     -e "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" \
     -e "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/" \
     -e "s/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/" \
     -e "s/^#?UsePAM .*/UsePAM yes/" \
-    -e "s/^#?AuthenticationMethods .*/AuthenticationMethods publickey,keyboard-interactive/" \
-    -e "s/^#?AllowUsers .*/AllowUsers $allowed_user/" \
+    -e "s/^#?AuthenticationMethods .*/$authentication_methods/" \
+    -e "s/^#?AllowUsers .*/$allow_users/" \
     -e "s/^#?Port .*/Port $admin_ssh_port/" \
-    -e "s/^#?ClientAliveInterval .*/ClientAliveInterval 60/" \
-    -e "s/^#?ClientAliveCountMax .*/ClientAliveCountMax 1/" \
+    -e "s/^#?ClientAliveInterval .*/$client_alive_interval/" \
+    -e "s/^#?ClientAliveCountMax .*/$client_alive_count_max/" \
     "$sshd_config"
 
   # Add necessary directives if not present
-  if ! grep -q "^AuthenticationMethods publickey,keyboard-interactive" "$sshd_config"; then
-    echo "AuthenticationMethods publickey,keyboard-interactive" | tee -a "$sshd_config" >/dev/null
+  if ! grep -q "^$authentication_methods" "$sshd_config"; then
+    echo "$authentication_methods" | tee -a "$sshd_config" >/dev/null
   fi
-  if ! grep -q "^AllowUsers $allowed_user" "$sshd_config"; then
-    echo "AllowUsers $allowed_user" | tee -a "$sshd_config" >/dev/null
+  if ! grep -q "^$allow_users" "$sshd_config"; then
+    echo "$allow_users" | tee -a "$sshd_config" >/dev/null
   fi
-  if ! grep -q "^ClientAliveInterval 60" "$sshd_config"; then
-    echo "ClientAliveInterval 60" | tee -a "$sshd_config" >/dev/null
+  if ! grep -q "^$client_alive_interval" "$sshd_config"; then
+    echo "$client_alive_interval" | tee -a "$sshd_config" >/dev/null
   fi
-  if ! grep -q "^ClientAliveCountMax 1" "$sshd_config"; then
-    echo "ClientAliveCountMax 1" | tee -a "$sshd_config" >/dev/null
+  if ! grep -q "^$client_alive_count_max" "$sshd_config"; then
+    echo "$client_alive_count_max" | tee -a "$sshd_config" >/dev/null
   fi
 
   echo "SSH configured to require public key and Google Authenticator authentication and disconnect inactive sessions."
 
   # Configure SSH keys for the allowed user
-  ssh_key="/home/$allowed_user/.ssh/id_ed25519"
+  ssh_dir="/home/$allowed_user/.ssh"
+  ssh_key="$ssh_dir/id_ed25519"
   ssh_pub_key="${ssh_key}.pub"
-  authorized_keys="/home/$allowed_user/.ssh/authorized_keys"
+  authorized_keys="$ssh_dir/authorized_keys"
 
   # Ensure .ssh directory exists with correct permissions
-  if [ ! -d "/home/$allowed_user/.ssh" ]; then
+  if [ ! -d "$ssh_dir" ]; then
     echo "Creating .ssh directory for $allowed_user..."
-    mkdir -p "/home/$allowed_user/.ssh"
+    mkdir -p "$ssh_dir"
   fi
 
   # Always enforce correct permissions on .ssh directory
-  chmod 700 "/home/$allowed_user/.ssh"
-  chown "$allowed_user:$allowed_user" "/home/$allowed_user/.ssh"
+  chmod 700 "$ssh_dir"
+  chown "$allowed_user:$allowed_user" "$ssh_dir"
 
   # Check for any existing SSH key pairs in the .ssh directory
   if [ -f "$ssh_key" ] || [ -f "$ssh_pub_key" ]; then
     echo "SSH key pair already exists for $allowed_user."
   else
     echo "No SSH key found for $allowed_user. Generating a new key pair..."
-    su - "$allowed_user" -c "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
+    su - "$allowed_user" -c "ssh-keygen -t ed25519 -f $ssh_key -N '' -q"
   fi
 
   # Set up authorized_keys
@@ -256,10 +259,10 @@ configure_ssh() {
   echo "IMPORTANT: You must securely copy the private key to your local machine before rebooting."
   echo "To securely transfer the private key, run the following command on your local machine:"
   echo ""
-  echo "scp <username>@<remote_host>:/home/$allowed_user/.ssh/id_ed25519 ~/.ssh/"
+  echo "scp <username>@<remote_host>:$ssh_dir/id_ed25519 ~/.ssh/"
   echo ""
   echo "After copying the private key, delete it from the remote server for security:"
-  echo "ssh <username>@<remote_host> 'rm /home/$allowed_user/.ssh/id_ed25519'"
+  echo "ssh <username>@<remote_host> 'rm $ssh_dir/id_ed25519'"
   echo ""
   echo "Ensure the permissions for the private key on your local machine are set correctly with:"
   echo "chmod 600 ~/.ssh/id_ed25519"
@@ -372,7 +375,6 @@ configure_suricata() {
   suricata_conf="/usr/local/etc/suricata/suricata.yaml"
   suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
   suricata_rules="/var/lib/suricata/rules/custom.rules"
-  suricata_port="8000" # Define the divert port for IPFW to Suricata
 
   # Create or update the Suricata custom configuration file
   cat <<EOF | tee "$suricata_custom_conf" >/dev/null
@@ -544,7 +546,7 @@ configure_password_and_umask() {
   fi
 
   # Configure password expiration if not disabled
-  if [ "$password_expiration" != "no password expiration" ]; then
+  if [ "$password_expiration" != "none" ]; then
     # Extract the full 'default' block and handle multi-line continuation
     if awk '/^default:/ { flag=1 } flag { print; if (!/\\$/) flag=0 }' /etc/login.conf | grep -q 'passwordtime='; then
       # Update the existing passwordtime value inside the 'default' block
@@ -703,7 +705,7 @@ fi
 #################################
 # Suricata Traffic Diversion (If Enabled)
 #################################
-if [ "\$divert_port" != "disable" ]; then
+if [ "\$divert_port" != "none" ]; then
     # Divert all traffic to Suricata for inline IPS processing
     \${fwcmd} add 2400 divert \$divert_port ip from any to any
 fi
@@ -784,9 +786,12 @@ configure_cron_updates() {
   current_crontab=$(crontab -l 2>/dev/null || true)
 
   # Define cron jobs
-  suricata_cron="0 2 * * 0 suricata-update"
-  freebsd_update_cron="0 3 * * 0 PAGER=cat freebsd-update cron"
-  pkg_update_cron="0 4 * * 0 pkg update -y && pkg upgrade -y"
+  suricata_cmd="suricata-update"
+  freebsd_update_cmd="PAGER=cat freebsd-update cron"
+  pkg_update_cmd="pkg update && pkg upgrade -y"
+  suricata_cron="0 2 * * 0 $suricata_cmd"
+  freebsd_update_cron="0 3 * * 0 $freebsd_update_cmd"
+  pkg_update_cron="0 4 * * 0 $pkg_update_cmd"
 
   # Temporary file to store updated crontab, specify /tmp directory explicitly
   temp_crontab=$(mktemp /tmp/root_crontab.XXXXXX)
@@ -795,7 +800,7 @@ configure_cron_updates() {
   echo "$current_crontab" | tee "$temp_crontab" >/dev/null
 
   # Add Suricata update cron job if applicable
-  if [ "$install_suricata" = "yes" ] && ! echo "$current_crontab" | grep -qF "suricata-update"; then
+  if [ "$install_suricata" = "yes" ] && ! echo "$current_crontab" | grep -qF "$suricata_cmd"; then
     echo "$suricata_cron" | tee -a "$temp_crontab" >/dev/null
     echo "Added Suricata update cron job."
   else
@@ -803,7 +808,7 @@ configure_cron_updates() {
   fi
 
   # Add FreeBSD update cron job if not already present
-  if ! echo "$current_crontab" | grep -qF "freebsd-update cron"; then
+  if ! echo "$current_crontab" | grep -qF "$freebsd_update_cmd"; then
     echo "$freebsd_update_cron" | tee -a "$temp_crontab" >/dev/null
     echo "Added FreeBSD update cron job."
   else
@@ -811,7 +816,7 @@ configure_cron_updates() {
   fi
 
   # Add pkg update cron job if not already present
-  if ! echo "$current_crontab" | grep -qF "pkg update"; then
+  if ! echo "$current_crontab" | grep -qF "$pkg_update_cmd"; then
     echo "$pkg_update_cron" | tee -a "$temp_crontab" >/dev/null
     echo "Added pkg update cron job."
   else
