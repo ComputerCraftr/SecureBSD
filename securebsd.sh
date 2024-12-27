@@ -476,10 +476,12 @@ harden_sysctl() {
   for setting in \
     "net.inet.icmp.icmplim=50" \
     "net.inet.tcp.blackhole=2" \
-    "net.inet.udp.blackhole=1" \
-    "net.inet.tcp.syncookies=1" \
     "net.inet.tcp.drop_synfin=1" \
+    "net.inet.tcp.syncookies=1" \
+    "net.inet.udp.blackhole=1" \
     "net.inet.ip.dummynet.io_fast=1" \
+    "net.inet6.ip6.use_tempaddr=1" \
+    "net.inet6.ip6.prefer_tempaddr=1" \
     "kern.coredump=0" \
     "kern.randompid=1" \
     "kern.sugid_coredump=0" \
