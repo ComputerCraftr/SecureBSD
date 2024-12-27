@@ -728,18 +728,18 @@ fi
 \${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
 
 # Allow new SSH connections from allowed source IPs to the firewall
-\${fwcmd} add 2600 pipe 2 ip4 from \$ssh_ips to me \$ssh_port proto tcp setup in limit dst-addr 2
+\${fwcmd} add 2600 pipe 2 ip4 from \$ssh_ips to me \$ssh_port tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
 
 # Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
-\${fwcmd} add 2700 pipe 2 ip4 from any to me 80,443 proto tcp setup in limit src-addr 10
+\${fwcmd} add 2700 pipe 2 ip4 from any to me 80,443 tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 
 # IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
 if [ "\$ipv6_available" -eq 1 ]; then
     # Dummynet pipe to limit IPv6 bandwidth
     \${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
 
-    \${fwcmd} add 2800 pipe 3 ip6 from \$ssh_ips to me6 \$ssh_port proto tcp setup in limit dst-addr 2
-    \${fwcmd} add 2900 pipe 3 ip6 from any to me6 80,443 proto tcp setup in limit src-addr 10
+    \${fwcmd} add 2800 pipe 3 ip6 from \$ssh_ips to me6 \$ssh_port tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+    \${fwcmd} add 2900 pipe 3 ip6 from any to me6 80,443 tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
 
 # Allow DHCPv4 for WAN and LAN
