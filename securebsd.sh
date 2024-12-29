@@ -489,7 +489,11 @@ harden_sysctl() {
     "security.bsd.see_other_gids=0" \
     "security.bsd.see_jail_proc=0" \
     "security.bsd.unprivileged_read_msgbuf=0" \
-    "security.bsd.unprivileged_proc_debug=0"; do
+    "security.bsd.unprivileged_proc_debug=0" \
+    "hw.ibrs_disable=0" \
+    "hw.spec_store_bypass_disable=2" \
+    "hw.mds_disable=3" \
+    "vm.pmap.allow_2m_x_ept=0"; do
     key="${setting%%=*}"
     if grep -q "^${key}" "$sysctl_conf"; then
       sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
