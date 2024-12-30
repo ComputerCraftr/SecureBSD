@@ -131,10 +131,12 @@ backup_configs() {
   echo "Creating backups of critical configuration files..."
   backup_dir="/etc/backup_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "$backup_dir"
+  chmod 750 "$backup_dir"
   for conf_file in /etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd; do
     cp "$conf_file" "$backup_dir"
   done
-  echo "Backup completed. Files saved in $backup_dir."
+  chflags -R schg "$backup_dir"
+  echo "Backup completed and made immutable. Files saved in $backup_dir."
 }
 
 # Update FreeBSD and install necessary packages (sudo, fail2ban, Suricata, Google Authenticator)
