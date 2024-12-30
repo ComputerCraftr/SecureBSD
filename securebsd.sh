@@ -748,21 +748,11 @@ if [ "\$ipv6_available" -eq 1 ]; then
     \${fwcmd} add 2900 pipe 3 ip6 from any to me6 80,443 tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
 
-# Allow DHCPv4 for WAN and LAN
-\${fwcmd} add 3000 allow ip4 from any 67 to me 68 proto udp in recv \$ext_if keep-state
-\${fwcmd} add 3100 allow ip4 from any 67 to any 68 proto udp in recv \$int_if keep-state
-
-# Allow DHCPv6 for WAN and LAN (if IPv6 is available)
-if [ "\$ipv6_available" -eq 1 ]; then
-    \${fwcmd} add 3200 allow ip6 from any 547 to me6 546 proto udp in recv \$ext_if keep-state
-    \${fwcmd} add 3300 allow ip6 from any 547 to any 546 proto udp in recv \$int_if keep-state
-fi
-
 #################################
 # Outbound Traffic
 #################################
-# Allow all outbound traffic, with stateful inspection
-\${fwcmd} add 3400 allow ip from any to any out keep-state
+# Allow all outbound traffic with stateful handling
+\${fwcmd} add 3000 allow ip from any to any out keep-state
 
 #################################
 # Final Rule: Deny all other traffic
