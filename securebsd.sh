@@ -655,20 +655,23 @@ if [ "\$ipv6_available" -eq 1 ]; then
 fi
 
 #################################
-# Reassemble Fragmented Packets Early
-#################################
-# Reassemble fragmented packets before further processing
-\${fwcmd} add 1200 reass ip from any to any in
-
-#################################
-# Anti-Spoofing, Recon Prevention, and Fail2Ban Protection
+# Fail2Ban Protection
 #################################
 # Table to hold banned IPs
 \${fwcmd} table fail2ban create or-flush type addr
 
 # Drop traffic from the Fail2Ban table
-\${fwcmd} add 1300 deny log ip from 'table(fail2ban)' to any
+\${fwcmd} add 1200 deny log ip from 'table(fail2ban)' to any
 
+#################################
+# Fragmented Packet Reassembly
+#################################
+# Reassemble fragmented packets before further processing
+\${fwcmd} add 1300 reass ip from any to any in
+
+#################################
+# Anti-Spoofing and Recon Prevention
+#################################
 # Block packets with IP options to prevent IP spoofing and source routing attacks
 \${fwcmd} add 1400 deny log ip from any to any ipoptions ssrr
 \${fwcmd} add 1410 deny log ip from any to any ipoptions lsrr
@@ -766,7 +769,6 @@ EOF
   # Set the firewall to load on boot and specify the rules file
   sysrc firewall_enable="YES"
   sysrc firewall_script="$ipfw_rules"
-  sysrc firewall_type="custom" # Indicate that this is a custom firewall
   sysrc firewall_logging="YES" # Enable firewall logging
 
   echo "IPFW firewall with Suricata and Dummynet configured, rules saved to $ipfw_rules, and enabled at boot."
