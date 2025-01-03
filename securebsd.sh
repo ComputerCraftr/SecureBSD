@@ -446,19 +446,23 @@ EOF
 
 # Configure Fail2Ban to protect SSH
 configure_fail2ban() {
-  echo "Configuring Fail2Ban to protect SSH..."
+  echo "Configuring Fail2Ban to protect SSH and add manual permanent ban jail..."
 
   # Configure Fail2Ban jail
-  echo "Creating Fail2Ban jail.local for SSH..."
+  echo "Creating Fail2Ban jail.local for SSH and manual bans..."
   cat <<EOF | tee /usr/local/etc/fail2ban/jail.local >/dev/null
 [sshd]
 enabled = true
-port = $admin_ssh_port
 filter = sshd
-logpath = /var/log/auth.log
 maxretry = 3
 bantime = 3600  # 1 hour ban
 findtime = 600  # 10 minutes window to track failed attempts
+action = bsd-ipfw[table=fail2ban]
+
+[manualbans]
+enabled = true
+filter =
+bantime = -1  # Permanent ban
 action = bsd-ipfw[table=fail2ban]
 EOF
 
