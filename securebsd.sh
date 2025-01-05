@@ -323,7 +323,17 @@ configure_ssh_pam() {
     END {
       if (!inserted) print ga_line;
     }
-  ' "$pam_sshd_config" | tee "$pam_sshd_config.tmp" >/dev/null && mv "$pam_sshd_config.tmp" "$pam_sshd_config"
+  ' "$pam_sshd_config" | tee "$pam_sshd_config.tmp" >/dev/null
+
+  # Abort if awk produces an empty file
+  if [ ! -s "$pam_sshd_config.tmp" ]; then
+    echo "Error: Processing $pam_sshd_config failed."
+    rm "$pam_sshd_config.tmp"
+    return 1
+  fi
+
+  # Replace the sshd config file atomically
+  mv "$pam_sshd_config.tmp" "$pam_sshd_config"
 
   echo "Google Authenticator added to the auth section of PAM SSH configuration."
 }
@@ -417,7 +427,7 @@ outputs:
 EOF
 
   # Update SSH port in suricata.yaml using sed to match single values or lists
-  sed -E -i '' "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$admin_ssh_port/" "$suricata_conf"
+  sed -i '' -E "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$admin_ssh_port/" "$suricata_conf"
 
   # Append the custom configuration to the existing suricata.yaml using the `include` directive
   if ! grep -q "^include: $suricata_custom_conf" "$suricata_conf"; then
@@ -568,35 +578,50 @@ configure_securelevel() {
 configure_password_and_umask() {
   echo "Configuring password security with Blowfish encryption and setting a secure umask..."
 
-  # Change password hashing to Blowfish
-  sed -i '' -E 's/(:passwd_format=)[^:]+(:)/\1blf\2/' /etc/login.conf
-
   # Check if the 'default' block exists
   if ! grep -q '^default:' /etc/login.conf; then
     echo "Error: 'default:' block not found in /etc/login.conf. Cannot proceed."
     return 1
   fi
 
-  # Configure password expiration if not disabled
-  if [ "$password_expiration" != "none" ]; then
-    # Extract the full 'default' block and handle multi-line continuation
-    if awk '/^default:/ { flag=1 } flag { print; if (!/\\$/) flag=0 }' /etc/login.conf | grep -qF 'passwordtime='; then
-      # Update the existing passwordtime value inside the 'default' block
-      awk -v new_passwordtime="passwordtime=${password_expiration}:" \
-        '/^default:/ { flag=1 }
-         flag && /passwordtime=/ { sub(/passwordtime=[0-9]+d:/, new_passwordtime); flag=0 }
-         { print; if (!/\\$/) flag=0 }' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null && mv /etc/login.conf.tmp /etc/login.conf
-    else
-      # Append passwordtime inside the default block
-      awk -v new_passwordtime="passwordtime=${password_expiration}:\\" \
-        '/^default:/ { print; print "\t:" new_passwordtime; next }1' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null && mv /etc/login.conf.tmp /etc/login.conf
-    fi
+  # Set Blowfish password hashing, secure umask, and password expiration in one pass
+  awk -v new_passwd_format="passwd_format=blf:" -v new_umask="umask=027:" -v password_expiration="${password_expiration:-none}" '
+    BEGIN { in_default = 0; passwordtime_present = 0 }
+    # Start processing the "default" block
+    /^default:/ { in_default = 1 }
+    in_default {
+      # Update passwd_format
+      if ($0 ~ /:passwd_format=/) sub(/passwd_format=[^:]+:/, new_passwd_format);
+      # Update umask
+      if ($0 ~ /:umask=/) sub(/umask=[0-9]+:/, new_umask);
+      # Update passwordtime if it exists
+      if ($0 ~ /:passwordtime=/) {
+        passwordtime_present = 1;
+        if (password_expiration != "none") sub(/passwordtime=[^:]+:/, "passwordtime=" password_expiration ":");
+      }
+      # Append passwordtime if missing and the block ends
+      if ($0 !~ /:\\$/) {
+        in_default = 0;
+        if (!passwordtime_present && password_expiration != "none") {
+          print "\t:passwordtime=" password_expiration ":\\";
+        }
+      }
+    }
+    # Print lines as they are
+    { print }
+  ' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null
+
+  # Abort if awk produces an empty file
+  if [ ! -s /etc/login.conf.tmp ]; then
+    echo "Error: Processing login.conf failed."
+    rm /etc/login.conf.tmp
+    return 1
   fi
 
-  # Set secure umask to 027
-  sed -i '' -E 's/(:umask=)022(:)/\1027\2/' /etc/login.conf
+  # Replace the login.conf file atomically
+  mv /etc/login.conf.tmp /etc/login.conf
 
-  # Rebuild login capabilities database to apply the changes
+  # Rebuild login capabilities database
   if ! cap_mkdb /etc/login.conf; then
     echo "Error: Failed to rebuild the login.conf database."
     return 1
