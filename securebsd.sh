@@ -232,7 +232,9 @@ configure_ssh() {
     fi
   else
     echo "authorized_keys already exists for $allowed_user. Checking if the public key is present..."
-    if ! grep -qF "$(cat "$ssh_pub_key")" "$authorized_keys"; then
+    # Extract key type and key value from the public key file
+    key_type_and_value=$(awk '{print $1, $2}' "$ssh_pub_key")
+    if ! grep -qF "$key_type_and_value" "$authorized_keys"; then
       echo "Adding missing public key to authorized_keys."
       tee -a "$authorized_keys" <"$ssh_pub_key" >/dev/null
     else
@@ -360,7 +362,7 @@ configure_google_auth() {
 # Configure sudo for the allowed user
 configure_sudo() {
   echo "Configuring sudo for the allowed user..."
-  if ! groups "$allowed_user" | grep -q wheel; then
+  if ! groups "$allowed_user" | grep -qF "wheel"; then
     pw groupmod wheel -m "$allowed_user"
   fi
   if [ ! -f /usr/local/etc/sudoers.d/wheel ]; then
@@ -418,7 +420,7 @@ EOF
   sed -E -i '' "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$admin_ssh_port/" "$suricata_conf"
 
   # Append the custom configuration to the existing suricata.yaml using the `include` directive
-  if ! grep -q "include: $suricata_custom_conf" "$suricata_conf"; then
+  if ! grep -q "^include: $suricata_custom_conf" "$suricata_conf"; then
     echo "include: $suricata_custom_conf" | tee -a "$suricata_conf" >/dev/null
     echo "Custom Suricata configuration included."
   else
@@ -426,7 +428,7 @@ EOF
   fi
 
   # Add custom Suricata rule for SSH port if not present
-  if ! grep -q "port $admin_ssh_port" "$suricata_rules"; then
+  if ! grep -qF "port $admin_ssh_port" "$suricata_rules"; then
     echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" | tee -a "$suricata_rules" >/dev/null
     echo "Custom SSH port rule added to Suricata."
   else
@@ -578,7 +580,7 @@ configure_password_and_umask() {
   # Configure password expiration if not disabled
   if [ "$password_expiration" != "none" ]; then
     # Extract the full 'default' block and handle multi-line continuation
-    if awk '/^default:/ { flag=1 } flag { print; if (!/\\$/) flag=0 }' /etc/login.conf | grep -q 'passwordtime='; then
+    if awk '/^default:/ { flag=1 } flag { print; if (!/\\$/) flag=0 }' /etc/login.conf | grep -qF 'passwordtime='; then
       # Update the existing passwordtime value inside the 'default' block
       awk -v new_passwordtime="passwordtime=${password_expiration}:" \
         '/^default:/ { flag=1 }
@@ -638,7 +640,7 @@ ssh_ips="$admin_ips"          # List of allowed SSH source IPs
 ssh_port="$admin_ssh_port"    # SSH port to allow
 
 # Check if IPv6 is available by detecting any IPv6 addresses
-ipv6_available=\$(ifconfig | grep -q "inet6" && echo 1 || echo 0)
+ipv6_available=\$(ifconfig | grep -qF "inet6" && echo 1 || echo 0)
 
 # Flush existing rules
 \${fwcmd} -q flush
