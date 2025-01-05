@@ -16,7 +16,7 @@ sensitive_files="$service_scheduler_files $password_related_files $service_relat
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
-  echo "This script must be run as root."
+  echo "This script must be run as root. Please use sudo or run as root user."
   exit 1
 fi
 
