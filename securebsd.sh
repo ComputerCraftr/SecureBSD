@@ -552,6 +552,18 @@ harden_loader_conf() {
 
     # Check if the module file exists
     if [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
+      # Attempt to load the kernel module
+      if kldstat -q -m "$module"; then
+        echo "Module '${module}' already loaded."
+      elif [ "$module" != "ipfw" ]; then
+        if kldload "$module" 2>/dev/null; then
+          echo "Module '${module}' successfully loaded."
+        else
+          echo "Warning: Failed to load kernel module '${module}'."
+          continue
+        fi
+      fi
+
       # Update or append the loader.conf entry
       if grep -q "^${key}" "$loader_conf"; then
         sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
@@ -906,8 +918,6 @@ main() {
   backup_configs
   update_and_install_packages
   configure_password_and_umask
-  harden_sysctl
-  harden_loader_conf
   configure_ssh
   configure_ssh_pam
   configure_google_auth
@@ -920,6 +930,8 @@ main() {
   secure_syslog_and_tmp
   configure_cron_updates
   configure_securelevel
+  harden_loader_conf
+  harden_sysctl
   lock_down_system
   echo "Security hardening complete. Please reboot to apply all changes."
 }
