@@ -5,7 +5,7 @@ set -eu
 
 # Define file variables for system hardening (chflags schg)
 service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab /usr/local/etc/sudoers /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab /usr/local/etc/sudoers /usr/local/etc/sudoers.d/wheel /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
@@ -55,7 +55,7 @@ validate_password_expiration() {
 # Clear immutable flags on system files for updates
 clear_immutable_flags() {
   echo "Clearing immutable flags on system files for updates..."
-  for file in $full_lockdown_files $sensitive_files; do
+  for file in $full_lockdown_files; do
     if [ ! -e "$file" ]; then
       echo "Warning: $file does not exist, skipping."
       continue
