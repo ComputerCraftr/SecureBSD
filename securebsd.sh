@@ -501,10 +501,16 @@ harden_sysctl() {
     "hw.mds_disable=3" \
     "vm.pmap.allow_2m_x_ept=0"; do
     key="${setting%%=*}"
-    if grep -q "^${key}" "$sysctl_conf"; then
-      sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
+
+    # Check if the sysctl key exists
+    if sysctl -a | grep -q "^${key}"; then
+      if grep -q "^${key}" "$sysctl_conf"; then
+        sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
+      else
+        echo "$setting" | tee -a "$sysctl_conf" >/dev/null
+      fi
     else
-      echo "$setting" | tee -a "$sysctl_conf" >/dev/null
+      echo "Warning: Sysctl key '${key}' does not exist on this system."
     fi
   done
 
@@ -526,10 +532,22 @@ harden_loader_conf() {
     'ipdivert_load="YES"' \
     'dummynet_load="YES"'; do
     key="${setting%%=*}"
-    if grep -q "^${key}" "$loader_conf"; then
-      sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
+
+    # Extract the module name (e.g., from mac_bsdextended_load to mac_bsdextended)
+    module="${key%_load}"
+    module_path="/boot/kernel/${module}.ko"
+    module_alt_path="/boot/modules/${module}.ko"
+
+    # Check if the module file exists
+    if [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
+      # Update or append the loader.conf entry
+      if grep -q "^${key}" "$loader_conf"; then
+        sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
+      else
+        echo "$setting" | tee -a "$loader_conf" >/dev/null
+      fi
     else
-      echo "$setting" | tee -a "$loader_conf" >/dev/null
+      echo "Warning: Kernel module '${module}' not found in /boot/kernel/ or /boot/modules/"
     fi
   done
 
