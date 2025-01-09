@@ -600,6 +600,12 @@ security.bsd.see_other_gids=0
 security.bsd.see_jail_proc=0
 security.bsd.unprivileged_read_msgbuf=0
 security.bsd.unprivileged_proc_debug=0
+security.mac.bsdextended.logging=1
+security.mac.portacl.suser_exempt=1
+security.mac.portacl.rules=uid:$(id -u "root"):tcp:$admin_ssh_port
+security.mac.portacl.port_high=10000
+net.inet.ip.portrange.reservedlow=0
+net.inet.ip.portrange.reservedhigh=0
 hw.ibrs_disable=0
 hw.spec_store_bypass_disable=2
 hw.mds_disable=3
@@ -618,7 +624,7 @@ EOF
         echo "$setting" | tee -a "$sysctl_conf" >/dev/null
       fi
     else
-      echo "Warning: Sysctl key '${key}' does not exist on this system."
+      echo "Warning: sysctl key '${key}' does not exist on this system."
     fi
   done
 
@@ -634,7 +640,6 @@ harden_loader_conf() {
   settings=$(
     cat <<EOF
 mac_bsdextended_load="YES"
-mac_partition_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
 ipfw_load="YES"
