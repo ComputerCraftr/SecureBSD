@@ -103,7 +103,7 @@ collect_user_input() {
   validate_interface "$external_interface"
 
   # Suricata installation choice
-  echo "Do you want to install and configure Suricata (yes/no)?"
+  echo "Do you want to install and configure Suricata? (yes/no)"
   printf "Enter your choice (default: yes): "
   read -r install_suricata
   install_suricata="${install_suricata:-yes}"
@@ -297,19 +297,15 @@ configure_ssh_pam() {
     BEGIN {
       inserted = 0;
     }
-    {
-      # Remove leading whitespace for easier processing
-      line = $0; gsub(/^[ \t]+/, "", line);
-    }
     # Detect auth section lines
     /^auth/ {
-      if (line ~ /pam_unix\.so/ && !inserted) {
+      if (!inserted && $0 ~ /pam_unix\.so/) {
         # Replace pam_unix.so with pam_google_authenticator.so
         print ga_line;
         inserted = 1;
         next;
       }
-      if (!inserted && line ~ /(sufficient|requisite|binding)/) {
+      if (!inserted && $0 ~ /(sufficient|requisite|binding)/) {
         # Insert Google Authenticator before terminal rules
         print ga_line;
         inserted = 1;
@@ -710,7 +706,7 @@ configure_password_and_umask() {
         }
       }
     }
-    # Print lines as they are
+    # Print the current line
     { print }
   ' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null
 
