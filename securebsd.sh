@@ -5,7 +5,10 @@ set -eu
 
 # Define file variables for system hardening (chflags schg)
 service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab /usr/local/etc/sudoers /usr/local/etc/sudoers.d/sudo /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab \
+/usr/local/etc/sudoers /usr/local/etc/sudoers.d/sudo /etc/sysctl.conf /boot/loader.conf \
+/boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf \
+/etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
@@ -133,9 +136,10 @@ collect_user_input() {
 backup_configs() {
   echo "Creating backups of critical configuration files..."
   backup_dir="/etc/backup_$(date +%Y%m%d_%H%M%S)"
+  backup_files="/etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd"
   mkdir -p "$backup_dir"
   chmod 750 "$backup_dir"
-  for conf_file in /etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd; do
+  for conf_file in $backup_files; do
     cp "$conf_file" "$backup_dir"
   done
   chflags -R schg "$backup_dir"
@@ -578,27 +582,32 @@ harden_sysctl() {
   sysctl_conf="/etc/sysctl.conf"
 
   # Define the sysctl values to be set and loop through them
-  for setting in \
-    "net.inet.icmp.icmplim=50" \
-    "net.inet.tcp.blackhole=2" \
-    "net.inet.tcp.drop_synfin=1" \
-    "net.inet.tcp.syncookies=1" \
-    "net.inet.udp.blackhole=1" \
-    "net.inet.ip.dummynet.io_fast=1" \
-    "net.inet6.ip6.use_tempaddr=1" \
-    "net.inet6.ip6.prefer_tempaddr=1" \
-    "kern.coredump=0" \
-    "kern.randompid=1" \
-    "kern.sugid_coredump=0" \
-    "security.bsd.see_other_uids=0" \
-    "security.bsd.see_other_gids=0" \
-    "security.bsd.see_jail_proc=0" \
-    "security.bsd.unprivileged_read_msgbuf=0" \
-    "security.bsd.unprivileged_proc_debug=0" \
-    "hw.ibrs_disable=0" \
-    "hw.spec_store_bypass_disable=2" \
-    "hw.mds_disable=3" \
-    "vm.pmap.allow_2m_x_ept=0"; do
+  settings=$(
+    cat <<EOF
+net.inet.icmp.icmplim=50
+net.inet.tcp.blackhole=2
+net.inet.tcp.drop_synfin=1
+net.inet.tcp.syncookies=1
+net.inet.udp.blackhole=1
+net.inet.ip.dummynet.io_fast=1
+net.inet6.ip6.use_tempaddr=1
+net.inet6.ip6.prefer_tempaddr=1
+kern.coredump=0
+kern.randompid=1
+kern.sugid_coredump=0
+security.bsd.see_other_uids=0
+security.bsd.see_other_gids=0
+security.bsd.see_jail_proc=0
+security.bsd.unprivileged_read_msgbuf=0
+security.bsd.unprivileged_proc_debug=0
+hw.ibrs_disable=0
+hw.spec_store_bypass_disable=2
+hw.mds_disable=3
+vm.pmap.allow_2m_x_ept=0
+EOF
+  )
+
+  for setting in $settings; do
     key="${setting%%=*}"
 
     # Check if the sysctl key exists
@@ -622,14 +631,19 @@ harden_loader_conf() {
   loader_conf="/boot/loader.conf"
 
   # Define the loader.conf values to be set and loop through them
-  for setting in \
-    'mac_bsdextended_load="YES"' \
-    'mac_partition_load="YES"' \
-    'mac_portacl_load="YES"' \
-    'mac_seeotheruids_load="YES"' \
-    'ipfw_load="YES"' \
-    'ipdivert_load="YES"' \
-    'dummynet_load="YES"'; do
+  settings=$(
+    cat <<EOF
+mac_bsdextended_load="YES"
+mac_partition_load="YES"
+mac_portacl_load="YES"
+mac_seeotheruids_load="YES"
+ipfw_load="YES"
+ipdivert_load="YES"
+dummynet_load="YES"
+EOF
+  )
+
+  for setting in $settings; do
     key="${setting%%=*}"
 
     # Extract the module name (e.g., from mac_bsdextended_load to mac_bsdextended)
