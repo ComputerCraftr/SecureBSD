@@ -5,7 +5,7 @@ set -eu
 
 # Define file variables for system hardening (chflags schg)
 service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab /usr/local/etc/sudoers /usr/local/etc/sudoers.d/wheel /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab /usr/local/etc/sudoers /usr/local/etc/sudoers.d/sudo /etc/sysctl.conf /boot/loader.conf /boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
 
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
@@ -23,7 +23,7 @@ fi
 # Validate the existence of a user
 validate_user() {
   if ! id "$1" >/dev/null 2>&1; then
-    echo "Error: User '$1' does not exist. Please provide a valid username."
+    echo "User '$1' does not exist."
     return 1
   fi
 }
@@ -80,7 +80,10 @@ collect_user_input() {
   echo "Enter a valid username for SSH access and sudo privileges."
   printf "Enter the username to allow for SSH access: "
   read -r allowed_user
-  validate_user "$allowed_user"
+  if ! validate_user "$allowed_user"; then
+    echo "Please provide a valid username."
+    return 1
+  fi
 
   # SSH port input
   echo "Choose a custom SSH port (not the default 22)."
@@ -371,14 +374,102 @@ configure_google_auth() {
 
 # Configure sudo for the allowed user
 configure_sudo() {
-  echo "Configuring sudo for the allowed user..."
-  if ! groups "$allowed_user" | grep -qF "wheel"; then
-    pw groupmod wheel -m "$allowed_user"
+  echo "Configuring sudo for administrative users..."
+
+  # Create the sudo group if it doesn't exist
+  if ! getent group sudo >/dev/null; then
+    echo "Creating sudo group..."
+    pw groupadd sudo
   fi
-  if [ ! -f /usr/local/etc/sudoers.d/wheel ]; then
-    echo '%wheel ALL=(ALL) ALL' | tee /usr/local/etc/sudoers.d/wheel >/dev/null
+
+  # Prompt administrator for users to add to the sudo group
+  printf "The following users currently belong to the wheel group: "
+  getent group wheel | cut -d ':' -f 4
+
+  printf "\nEnter additional usernames to add to the sudo group (comma-separated, leave blank to skip): "
+  read -r users_to_add
+  users_to_add="${allowed_user},${users_to_add}"
+
+  if [ -n "$users_to_add" ]; then
+    users_added=""
+    # Split input into individual usernames
+    for user in $(echo "$users_to_add" | tr ',' '\n'); do
+      user=$(echo "$user" | xargs) # Trim whitespace
+      if validate_user "$user"; then
+        pw groupmod sudo -m "$user"
+        users_added="${users_added}${user},"
+      fi
+    done
+
+    # Print added users, trimming the trailing comma
+    if [ -n "$users_added" ]; then
+      users_added=$(echo "$users_added" | sed 's/,$//') # Remove trailing comma
+      echo "Users added to the sudo group: ${users_added}"
+    else
+      echo "No users added to the sudo group."
+    fi
   fi
-  echo "Sudo configured for the allowed user in the wheel group."
+
+  # Configure sudoers file for the sudo group
+  if [ ! -f /usr/local/etc/sudoers.d/sudo ]; then
+    echo '%sudo ALL=(ALL:ALL) ALL' | tee /usr/local/etc/sudoers.d/sudo >/dev/null
+    chmod 440 /usr/local/etc/sudoers.d/sudo
+  fi
+
+  # Prompt before disabling wheel group sudo access
+  echo "Do you want to disable sudo access for the wheel group? (yes/no)"
+  printf "Enter your choice (default: yes): "
+  read -r disable_wheel
+  disable_wheel="${disable_wheel:-yes}"
+
+  if [ "$disable_wheel" = "yes" ]; then
+    echo "Disabling sudo access for the wheel group..."
+
+    # Regex to catch all variations of %wheel entries
+    WHEEL_REGEX='^%wheel[[:blank:]]+ALL=\(ALL(:ALL)?\)[[:blank:]]+(NOPASSWD:[[:blank:]]+)?ALL'
+
+    if grep -qE "$WHEEL_REGEX" /usr/local/etc/sudoers; then
+      sed -i '' -E "s/${WHEEL_REGEX}/# &/" /usr/local/etc/sudoers
+      echo "Commented out %wheel group sudo access in /usr/local/etc/sudoers."
+    fi
+
+    # Disable any custom sudoers.d files for the wheel group
+    if [ -f /usr/local/etc/sudoers.d/wheel ]; then
+      mv /usr/local/etc/sudoers.d/wheel /usr/local/etc/sudoers.d/wheel.disabled
+      echo "Disabled /usr/local/etc/sudoers.d/wheel."
+    fi
+  else
+    echo "Wheel group sudo access remains enabled."
+  fi
+
+  # Prompt to remove non-root members from the wheel group
+  echo "Do you want to remove non-root members from the wheel group? (yes/no)"
+  printf "Enter your choice (default: yes): "
+  read -r remove_wheel_members
+  remove_wheel_members="${remove_wheel_members:-yes}"
+
+  if [ "$remove_wheel_members" = "yes" ]; then
+    users_removed=""
+    echo "Removing non-root users from the wheel group..."
+    for user in $(getent group wheel | cut -d ':' -f 4 | tr ',' '\n'); do
+      if [ "$user" != "root" ] && [ -n "$user" ]; then
+        pw groupmod wheel -d "$user"
+        users_removed="${users_removed}${user},"
+      fi
+    done
+
+    # Print removed users, trimming the trailing comma
+    if [ -n "$users_removed" ]; then
+      users_removed=$(echo "$users_removed" | sed 's/,$//') # Remove trailing comma
+      echo "Users removed from the wheel group: ${users_removed}"
+    else
+      echo "No users removed from the wheel group."
+    fi
+  else
+    echo "No users removed from the wheel group."
+  fi
+
+  echo "Sudo configuration complete. Please log out and log in again to apply changes."
 }
 
 # Configure Suricata for IPS mode and include custom config
