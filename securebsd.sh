@@ -105,6 +105,21 @@ collect_user_input() {
   read -r external_interface
   validate_interface "$external_interface"
 
+  echo "Would you like to install CPU microcode for your processor to enhance security? (yes/no)"
+  printf "Enter your choice (default: yes): "
+  read -r install_microcode
+  install_microcode="${install_microcode:-yes}"
+  if [ "$install_microcode" = "yes" ]; then
+    cpu_info=$(sysctl -n hw.model | tr '[:upper:]' '[:lower:]')
+    if echo "$cpu_info" | grep -qF "intel"; then
+      cpu_type="intel"
+    elif echo "$cpu_info" | grep -qF "amd"; then
+      cpu_type="amd"
+    else
+      cpu_type="unknown"
+    fi
+  fi
+
   # Suricata installation choice
   echo "Do you want to install and configure Suricata? (yes/no)"
   printf "Enter your choice (default: yes): "
@@ -153,6 +168,17 @@ update_and_install_packages() {
   pkg update
   pkg upgrade -y
   pkg install -y sudo py311-fail2ban anacron pam_google_authenticator
+
+  # Install CPU microcode if the user opted in
+  if [ "$cpu_type" = "intel" ]; then
+    echo "Detected Intel CPU. Installing 'cpu-microcode-intel' package."
+    pkg install -y cpu-microcode-intel
+  elif [ "$cpu_type" = "amd" ]; then
+    echo "Detected AMD CPU. Installing 'cpu-microcode-amd' package."
+    pkg install -y cpu-microcode-amd
+  else
+    echo "Could not detect Intel or AMD CPU. Skipping microcode installation."
+  fi
 
   # Install Suricata if the user opted in
   if [ "$install_suricata" = "yes" ]; then
@@ -633,10 +659,10 @@ EOF
 
 # Harden loader.conf with additional kernel security modules
 harden_loader_conf() {
-  echo "Configuring loader.conf for additional kernel security..."
+  echo "Configuring loader.conf for additional kernel security and microcode..."
   loader_conf="/boot/loader.conf"
 
-  # Define the loader.conf values to be set and loop through them
+  # Define the loader.conf values to be set for security modules
   settings=$(
     cat <<EOF
 mac_bsdextended_load="YES"
@@ -648,25 +674,46 @@ dummynet_load="YES"
 EOF
   )
 
+  # Add CPU microcode settings to loader.conf if detected
+  if [ "$cpu_type" != "unknown" ]; then
+    microcode_settings='cpuctl_load="YES"
+cpu_microcode_load="YES"'
+    if [ "$cpu_type" = "intel" ]; then
+      microcode_settings="${microcode_settings}
+cpu_microcode_name=\"/boot/firmware/intel-ucode.bin\""
+    elif [ "$cpu_type" = "amd" ]; then
+      microcode_settings="${microcode_settings}
+cpu_microcode_name=\"/boot/firmware/amd-ucode.bin\""
+    fi
+    settings="${settings}
+${microcode_settings}"
+  fi
+
   for setting in $settings; do
     key="${setting%%=*}"
 
-    # Extract the module name (e.g., from mac_bsdextended_load to mac_bsdextended)
-    module="${key%_load}"
-    module_path="/boot/kernel/${module}.ko"
-    module_alt_path="/boot/modules/${module}.ko"
+    # Determine if the entry is a loadable module
+    if echo "$key" | grep -qF "_load"; then
+      module="${key%_load}"
+      module_path="/boot/kernel/${module}.ko"
+      module_alt_path="/boot/modules/${module}.ko"
+    else
+      module="not_a_module"
+    fi
 
-    # Check if the module file exists
-    if [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
-      # Attempt to load the kernel module
-      if kldstat -q -m "$module"; then
-        echo "Module '${module}' already loaded."
-      elif [ "$module" != "ipfw" ]; then
-        if kldload "$module" 2>/dev/null; then
-          echo "Module '${module}' successfully loaded."
-        else
-          echo "Warning: Failed to load kernel module '${module}'."
-          continue
+    # Check if the module file exists for loadable modules
+    if [ "$module" = "not_a_module" ] || [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
+      if [ "$module" != "not_a_module" ]; then
+        # Attempt to load the kernel module
+        if kldstat -q -m "$module"; then
+          echo "Module '${module}' already loaded."
+        elif [ "$module" != "ipfw" ]; then
+          if kldload "$module" 2>/dev/null; then
+            echo "Module '${module}' successfully loaded."
+          else
+            echo "Warning: Failed to load kernel module '${module}'."
+            continue
+          fi
         fi
       fi
 
@@ -681,7 +728,7 @@ EOF
     fi
   done
 
-  echo "loader.conf hardened with additional kernel security modules."
+  echo "loader.conf hardened with additional kernel security modules and microcode settings."
 }
 
 # Set securelevel in rc.conf
