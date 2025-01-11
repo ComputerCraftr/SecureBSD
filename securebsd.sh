@@ -167,7 +167,7 @@ update_and_install_packages() {
   freebsd-update fetch install
   pkg update
   pkg upgrade -y
-  pkg install -y sudo py311-fail2ban anacron pam_google_authenticator
+  pkg install -y sudo lynis anacron pam_google_authenticator py311-fail2ban
 
   # Install CPU microcode if the user opted in
   if [ "$cpu_type" = "intel" ]; then
@@ -615,12 +615,15 @@ net.inet.tcp.blackhole=2
 net.inet.tcp.drop_synfin=1
 net.inet.tcp.syncookies=1
 net.inet.udp.blackhole=1
+net.inet.ip.random_id=1
 net.inet.ip.dummynet.io_fast=1
 net.inet6.ip6.use_tempaddr=1
 net.inet6.ip6.prefer_tempaddr=1
 kern.coredump=0
 kern.randompid=1
 kern.sugid_coredump=0
+security.bsd.hardlink_check_gid=1
+security.bsd.hardlink_check_uid=1
 security.bsd.see_other_uids=0
 security.bsd.see_other_gids=0
 security.bsd.see_jail_proc=0
