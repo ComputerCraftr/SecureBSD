@@ -215,10 +215,12 @@ configure_ssh() {
   client_alive_count_max="ClientAliveCountMax 1"
   sed -i '' -E \
     -e "s/^#?PermitRootLogin .*/PermitRootLogin no/" \
+    -e "s/^#?MaxAuthTries .*/MaxAuthTries 3/" \
     -e "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" \
     -e "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/" \
     -e "s/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/" \
     -e "s/^#?UsePAM .*/UsePAM yes/" \
+    -e "s/^#?UseDNS .*/UseDNS no/" \
     -e "s/^#?AuthenticationMethods .*/$authentication_methods/" \
     -e "s/^#?AllowUsers .*/$allow_users/" \
     -e "s/^#?Port .*/Port $admin_ssh_port/" \
@@ -232,12 +234,6 @@ configure_ssh() {
   fi
   if ! grep -q "^$allow_users" "$sshd_config"; then
     echo "$allow_users" | tee -a "$sshd_config" >/dev/null
-  fi
-  if ! grep -q "^$client_alive_interval" "$sshd_config"; then
-    echo "$client_alive_interval" | tee -a "$sshd_config" >/dev/null
-  fi
-  if ! grep -q "^$client_alive_count_max" "$sshd_config"; then
-    echo "$client_alive_count_max" | tee -a "$sshd_config" >/dev/null
   fi
 
   echo "SSH configured to require public key and Google Authenticator authentication and disconnect inactive sessions."
@@ -387,7 +383,7 @@ configure_google_auth() {
   ga_config="/home/$allowed_user/.google_authenticator"
 
   # Run google-authenticator as the allowed user with secure options
-  su - "$allowed_user" -c "google-authenticator -t -d -r 1 -R 30 -W -s '$ga_config'"
+  su - "$allowed_user" -c "google-authenticator -t -d -r 3 -R 30 -W -s '$ga_config'"
 
   # Secure permissions on the .google_authenticator file
   chmod 600 "$ga_config"
