@@ -683,9 +683,11 @@ EOF
 cpu_microcode_load="YES"'
     if [ "$cpu_type" = "intel" ]; then
       microcode_settings="${microcode_settings}
+coretemp_load="YES"
 cpu_microcode_name=\"/boot/firmware/intel-ucode.bin\""
     elif [ "$cpu_type" = "amd" ]; then
       microcode_settings="${microcode_settings}
+amdtemp_load="YES"
 cpu_microcode_name=\"/boot/firmware/amd-ucode.bin\""
     fi
     settings="${settings}
