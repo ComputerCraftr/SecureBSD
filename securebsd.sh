@@ -105,6 +105,11 @@ collect_user_input() {
   read -r external_interface
   validate_interface "$external_interface"
 
+  echo "Do you want to install security auditing tools? (yes/no)"
+  printf "Enter your choice (default: yes): "
+  read -r install_auditing_tools
+  install_auditing_tools="${install_auditing_tools:-yes}"
+
   echo "Would you like to install CPU microcode for your processor to enhance security? (yes/no)"
   printf "Enter your choice (default: yes): "
   read -r install_microcode
@@ -167,7 +172,14 @@ update_and_install_packages() {
   freebsd-update fetch install
   pkg update
   pkg upgrade -y
-  pkg install -y sudo lynis anacron pam_google_authenticator py311-fail2ban
+  pkg install -y sudo anacron pam_google_authenticator py311-fail2ban
+
+  # Install security auditing tools if the user opted in
+  if [ "$install_auditing_tools" = "yes" ]; then
+    pkg install -y lynis spectre-meltdown-checker
+  else
+    echo "Skipping auditing tools installation."
+  fi
 
   # Install CPU microcode if the user opted in
   if [ "$cpu_type" = "intel" ]; then
