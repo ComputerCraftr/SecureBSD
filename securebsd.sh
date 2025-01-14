@@ -998,9 +998,12 @@ fi
 
 # Deny stateless inbound martians
 \${fwcmd} add 2600 deny log ip from "\$martians_ip4" to any in
+\${fwcmd} add 2610 deny log ip from any to "\$martians_ip4" in
 if [ "\$ipv6_available" -eq 1 ]; then
     \${fwcmd} add 2700 deny log ip6 from "\$martians_ip6" to any in
-    \${fwcmd} add 2710 deny log ip6 from "\$martians_ip6_2" to any in
+    \${fwcmd} add 2710 deny log ip6 from any to "\$martians_ip6" in
+    \${fwcmd} add 2720 deny log ip6 from "\$martians_ip6_2" to any in
+    \${fwcmd} add 2730 deny log ip6 from any to "\$martians_ip6_2" in
 fi
 
 #################################
