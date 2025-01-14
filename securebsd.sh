@@ -618,6 +618,7 @@ harden_sysctl() {
   # Define the sysctl values to be set and loop through them
   settings=$(
     cat <<EOF
+net.link.bridge.pfil_bridge=1
 net.inet.icmp.icmplim=50
 net.inet.tcp.blackhole=2
 net.inet.tcp.drop_synfin=1
@@ -841,6 +842,34 @@ int_if="$external_interface"  # Adjust to your internal network interface
 divert_port="$suricata_port"  # Suricata divert port
 ssh_ips="$admin_ips"          # List of allowed SSH source IPs
 ssh_port="$admin_ssh_port"    # SSH port to allow
+user_tcp_ports="80,\
+443"                          # User TCP ports to allow
+
+# Define martian IP ranges to deny
+martians_ip4="0.0.0.0/8,\
+127.0.0.0/8,\
+169.254.0.0/16,\
+192.0.2.0/24,\
+192.88.99.0/24,\
+198.18.0.0/15,\
+198.51.100.0/24,\
+203.0.113.0/24,\
+204.152.64.0/23,\
+224.0.0.0/4,\
+233.252.0.0/24,\
+240.0.0.0/4,\
+255.255.255.255/32"
+martians_ip6="::/128,\
+::1/128,\
+100::/64,\
+2001::/32,\
+2001:20::/28,\
+2001:db8::/32"
+martians_ip6_2="2002::/16,\
+3fff::/20,\
+5f00::/16,\
+fe80::/10,\
+ff00::/8"
 
 # Check if IPv6 is available by detecting any IPv6 addresses
 ipv6_available=\$(ifconfig | grep -qF "inet6" && echo 1 || echo 0)
@@ -950,7 +979,7 @@ fi
 #################################
 if [ "\$divert_port" != "none" ]; then
     # Divert all traffic to Suricata for inline IPS processing
-    \${fwcmd} add 2400 divert \$divert_port ip from any to any
+    \${fwcmd} add 2400 divert "\$divert_port" ip from any to any
 fi
 
 #################################
@@ -959,6 +988,13 @@ fi
 # Check the state of all connections to allow established connections
 \${fwcmd} add 2500 check-state
 
+# Deny stateless inbound martians
+\${fwcmd} add 2600 deny log ip from "\$martians_ip4" to any in
+if [ "\$ipv6_available" -eq 1 ]; then
+    \${fwcmd} add 2700 deny log ip6 from "\$martians_ip6" to any in
+    \${fwcmd} add 2710 deny log ip6 from "\$martians_ip6_2" to any in
+fi
+
 #################################
 # Inbound Traffic (User-Defined Services)
 #################################
@@ -966,25 +1002,38 @@ fi
 \${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
 
 # Allow new SSH connections from allowed source IPs to the firewall
-\${fwcmd} add 2600 pipe 2 ip4 from \$ssh_ips to me \$ssh_port tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+\${fwcmd} add 2800 pipe 2 ip4 from "\$ssh_ips" to me "\$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
 
 # Allow HTTP/HTTPS connections to the firewall, with source IP limit for DoS mitigation
-\${fwcmd} add 2700 pipe 2 ip4 from any to me 80,443 tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+\${fwcmd} add 2900 pipe 2 ip4 from any to me "\$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 
 # IPv6 SSH and HTTP/HTTPS rules (if IPv6 is available)
 if [ "\$ipv6_available" -eq 1 ]; then
     # Dummynet pipe to limit IPv6 bandwidth
     \${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
 
-    \${fwcmd} add 2800 pipe 3 ip6 from \$ssh_ips to me6 \$ssh_port tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
-    \${fwcmd} add 2900 pipe 3 ip6 from any to me6 80,443 tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+    \${fwcmd} add 3000 pipe 3 ip6 from "\$ssh_ips" to me6 "\$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+    \${fwcmd} add 3100 pipe 3 ip6 from any to me6 "\$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
+
+#################################
+# Inbound Internal Traffic
+#################################
+# Deny any inbound traffic to me that hasn't been explicitly allowed
+\${fwcmd} add 3200 deny log ip from any to me in
+if [ "\$ipv6_available" -eq 1 ]; then
+    \${fwcmd} add 3300 deny log ip from any to me6 in
+fi
+
+# Allow all traffic passing through the internal interface
+\${fwcmd} add 3400 allow ip from any to any tcpflags syn,!ack,!fin,!rst in via "\$int_if" keep-state
+\${fwcmd} add 3410 allow ip from any to any proto udp in via "\$int_if" keep-state
 
 #################################
 # Outbound Traffic
 #################################
 # Allow all outbound traffic with stateful handling
-\${fwcmd} add 3000 allow ip from any to any out keep-state
+\${fwcmd} add 3500 allow ip from any to any out keep-state
 
 #################################
 # Final Rule: Deny all other traffic
