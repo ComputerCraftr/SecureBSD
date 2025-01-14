@@ -718,6 +718,14 @@ ${microcode_settings}"
     # Check if the module file exists for loadable modules
     if [ "$module" = "not_a_module" ] || [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
       if [ "$module" != "not_a_module" ]; then
+        # Attempt to detect the registered name using kldstat -v (only if the module is loaded)
+        registered_name=$(kldstat -v 2>/dev/null | awk -v mod="$module" '$0 ~ mod && !($NF ~ /\.ko/) {print $NF}')
+
+        # If no registered name is found, use the default name
+        if [ -n "$registered_name" ]; then
+          module="$registered_name"
+        fi
+
         # Attempt to load the kernel module
         if kldstat -q -m "$module"; then
           echo "Module '${module}' already loaded."
