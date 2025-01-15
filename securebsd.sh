@@ -615,7 +615,7 @@ harden_sysctl() {
   echo "Applying sysctl hardening..."
   sysctl_conf="/etc/sysctl.conf"
 
-  # Define the sysctl values to be set and loop through them
+  # Define the sysctl values to be set
   settings=$(
     cat <<EOF
 net.link.bridge.pfil_bridge=1
@@ -654,8 +654,8 @@ EOF
   for setting in $settings; do
     key="${setting%%=*}"
 
-    # Check if the sysctl key exists
-    if sysctl -a | grep -q "^${key}"; then
+    # Use sysctl -d to check if the key exists
+    if sysctl -d "$key" >/dev/null 2>&1; then
       if grep -q "^${key}" "$sysctl_conf"; then
         sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
       else
