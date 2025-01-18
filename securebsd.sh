@@ -371,6 +371,7 @@ configure_ssh_pam() {
 
   # Replace the sshd config file atomically
   mv "$pam_sshd_config.tmp" "$pam_sshd_config"
+  chmod 644 "$pam_sshd_config"
 
   echo "Google Authenticator added to the auth section of PAM SSH configuration."
 }
@@ -823,6 +824,7 @@ configure_password_and_umask() {
 
   # Replace the login.conf file atomically
   mv /etc/login.conf.tmp /etc/login.conf
+  chmod 644 /etc/login.conf
 
   # Rebuild login capabilities database
   if ! cap_mkdb /etc/login.conf; then
