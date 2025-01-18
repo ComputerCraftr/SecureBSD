@@ -688,19 +688,35 @@ EOF
 
   # Add CPU microcode settings to loader.conf if detected
   if [ "$cpu_type" != "unknown" ]; then
-    microcode_settings='cpuctl_load="YES"
-cpu_microcode_load="YES"'
+    microcode_settings=$(
+      cat <<EOF
+cpuctl_load="YES"
+cpu_microcode_load="YES"
+EOF
+    )
     if [ "$cpu_type" = "intel" ]; then
-      microcode_settings="${microcode_settings}
+      microcode_settings=$(
+        cat <<EOF
+$microcode_settings
 coretemp_load="YES"
-cpu_microcode_name=\"/boot/firmware/intel-ucode.bin\""
+cpu_microcode_name="/boot/firmware/intel-ucode.bin"
+EOF
+      )
     elif [ "$cpu_type" = "amd" ]; then
-      microcode_settings="${microcode_settings}
+      microcode_settings=$(
+        cat <<EOF
+$microcode_settings
 amdtemp_load="YES"
-cpu_microcode_name=\"/boot/firmware/amd-ucode.bin\""
+cpu_microcode_name="/boot/firmware/amd-ucode.bin"
+EOF
+      )
     fi
-    settings="${settings}
-${microcode_settings}"
+    settings=$(
+      cat <<EOF
+$settings
+$microcode_settings
+EOF
+    )
   fi
 
   for setting in $settings; do
