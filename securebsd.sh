@@ -749,7 +749,7 @@ EOF
         # Attempt to load the kernel module
         if kldstat -q -m "$module"; then
           echo "Module '${module}' already loaded."
-        elif [ "$module" != "ipfw" ]; then
+        elif [ "$module" != "cpu_microcode" ] && [ "$module" != "ipfw" ]; then
           if kldload "$module" 2>/dev/null; then
             echo "Module '${module}' successfully loaded."
           else
