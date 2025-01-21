@@ -862,12 +862,9 @@ configure_ipfw() {
   # Define the ipfw.rules values to be set
   settings=$(
     cat <<EOF
-ext_if="$external_interface"
-int_if="$external_interface"
 divert_port="$suricata_port"
 ssh_ips="$admin_ips"
 ssh_port="$admin_ssh_port"
-user_tcp_ports="80,443"
 EOF
   )
 
