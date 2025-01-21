@@ -201,6 +201,9 @@ update_and_install_packages() {
   else
     echo "Skipping Suricata installation."
   fi
+
+  # Fetch pkg audit database
+  pkg audit -Frq
 }
 
 # Configure SSH security settings
