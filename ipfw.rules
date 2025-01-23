@@ -7,11 +7,12 @@ set -eu
 fwcmd="/sbin/ipfw"
 
 # Define interfaces and ports
-bridge_if=""       # Adjust as needed for your bridge interface
-divert_port="none" # Suricata divert port
-ssh_ips=""         # List of allowed SSH source IPs
-ssh_port=""        # SSH port to allow
-user_tcp_ports=""  # User TCP ports to allow
+bridge_if=""           # Adjust as needed for your bridge interface
+divert_port="none"     # Suricata divert port
+ssh_ips=""             # List of allowed SSH source IPs
+ssh_port=""            # SSH port to allow
+user_tcp_ports=""      # User TCP ports to allow
+log_default_deny="yes" # Whether to log the default deny rules
 
 # Define martian (and multicast) IP ranges to deny
 martians_ip4="0.0.0.0/8,\
@@ -223,9 +224,16 @@ fi
 # Inbound Internal Traffic
 #################################
 # Deny any inbound traffic to me that hasn't been explicitly allowed
-${fwcmd} add 3600 deny log ip from any to me in
-if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 3700 deny log ip from any to me6 in
+if [ "$log_default_deny" = "yes" ]; then
+    ${fwcmd} add 3600 deny log ip from any to me in
+    if [ "$ipv6_available" -eq 1 ]; then
+        ${fwcmd} add 3700 deny log ip from any to me6 in
+    fi
+else
+    ${fwcmd} add 3600 deny ip from any to me in
+    if [ "$ipv6_available" -eq 1 ]; then
+        ${fwcmd} add 3700 deny ip from any to me6 in
+    fi
 fi
 
 # Allow all traffic passing through the bridge interface (if available)
@@ -244,4 +252,8 @@ ${fwcmd} add 3900 allow ip from any to any out keep-state
 # Final Rule: Deny all other traffic
 #################################
 # Deny any traffic that hasn't been explicitly allowed
-${fwcmd} add 65534 deny log ip from any to any
+if [ "$log_default_deny" = "yes" ]; then
+    ${fwcmd} add 65534 deny log ip from any to any
+else
+    ${fwcmd} add 65534 deny ip from any to any
+fi
