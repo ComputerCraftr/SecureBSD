@@ -169,7 +169,11 @@ backup_configs() {
 # Update FreeBSD and install necessary packages (sudo, fail2ban, Suricata, Google Authenticator)
 update_and_install_packages() {
   echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban, Google Authenticator)..."
-  freebsd-update fetch install
+  # FreeBSD update is not supported on all architectures
+  freebsd_update_supported="no"
+  if freebsd-update fetch install; then
+    freebsd_update_supported="yes"
+  fi
   pkg update
   pkg upgrade -y
   pkg install -y sudo anacron pam_google_authenticator py311-fail2ban
@@ -203,7 +207,7 @@ update_and_install_packages() {
   fi
 
   # Fetch pkg audit database
-  pkg audit -Frq
+  pkg audit -Frq || true
 }
 
 # Configure SSH security settings
@@ -934,11 +938,11 @@ configure_cron_updates() {
   fi
 
   # Add FreeBSD update cron job if not already present
-  if ! echo "$current_crontab" | grep -qF "$freebsd_update_cmd"; then
+  if [ "$freebsd_update_supported" = "yes" ] && ! echo "$current_crontab" | grep -qF "$freebsd_update_cmd"; then
     echo "$freebsd_update_cron" | tee -a "$temp_crontab" >/dev/null
     echo "Added FreeBSD update cron job."
   else
-    echo "FreeBSD update cron job already exists. Skipping..."
+    echo "FreeBSD update cron job already exists or not supported. Skipping..."
   fi
 
   # Add pkg update cron job if not already present
