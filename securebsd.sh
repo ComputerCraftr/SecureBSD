@@ -208,6 +208,9 @@ update_and_install_packages() {
 
   # Fetch pkg audit database
   pkg audit -Frq || true
+
+  # Check package integrity
+  pkg check -sa
 }
 
 # Configure SSH security settings
