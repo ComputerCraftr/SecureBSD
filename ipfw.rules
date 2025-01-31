@@ -160,11 +160,13 @@ fi
 ${fwcmd} pipe 1 config bw 100Kbit/s queue 1 droptail
 
 # Limit ICMPv4 echo requests and replies (ping flood protection)
-${fwcmd} add 2600 pipe 1 icmp from any to any icmptypes 8,0 in
+${fwcmd} add 2598 pipe 1 icmp from any to any icmptypes 8,0 in
+${fwcmd} add 2600 allow icmp from any to any icmptypes 8,0 in
 
 # IPv6 ICMPv6 echo requests and replies (ping flood protection)
 if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 2700 pipe 1 ipv6-icmp from any to any icmp6types 128,129 in
+    ${fwcmd} add 2698 pipe 1 ipv6-icmp from any to any icmp6types 128,129 in
+    ${fwcmd} add 2700 allow ipv6-icmp from any to any icmp6types 128,129 in
 fi
 
 # Deny all other ICMPv4 and ICMPv6 traffic
@@ -195,14 +197,16 @@ ${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff d
 
 # Allow new SSH connections from allowed source IPs to the firewall
 if [ -n "$ssh_ips" ] && [ -n "$ssh_port" ]; then
+    ${fwcmd} add 3198 pipe 2 ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in
     ${fwcmd} add 3199 count log ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in
-    ${fwcmd} add 3200 pipe 2 ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+    ${fwcmd} add 3200 allow ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
 fi
 
 # Allow user connections to the firewall, with source IP limit for DoS mitigation
 if [ -n "$user_tcp_ports" ]; then
+    ${fwcmd} add 3298 pipe 2 ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
     ${fwcmd} add 3299 count log ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
-    ${fwcmd} add 3300 pipe 2 ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+    ${fwcmd} add 3300 allow ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
 
 # IPv6 SSH and user rules (if IPv6 is available)
@@ -211,12 +215,14 @@ if [ "$ipv6_available" -eq 1 ]; then
     ${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
 
     if [ -n "$ssh_ips" ] && [ -n "$ssh_port" ]; then
+        ${fwcmd} add 3398 pipe 3 ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in
         ${fwcmd} add 3399 count log ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in
-        ${fwcmd} add 3400 pipe 3 ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+        ${fwcmd} add 3400 allow ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
     fi
     if [ -n "$user_tcp_ports" ]; then
+        ${fwcmd} add 3498 pipe 3 ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
         ${fwcmd} add 3499 count log ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
-        ${fwcmd} add 3500 pipe 3 ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+        ${fwcmd} add 3500 allow ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
     fi
 fi
 
