@@ -743,6 +743,11 @@ EOF
       module="not_a_module"
     fi
 
+    # Special case for cpu_microcode_load
+    if [ "$module" = "cpu_microcode" ]; then
+      module="not_a_module"
+    fi
+
     # Check if the module file exists for loadable modules
     if [ "$module" = "not_a_module" ] || [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
       if [ "$module" != "not_a_module" ]; then
@@ -757,7 +762,7 @@ EOF
         # Attempt to load the kernel module
         if kldstat -q -m "$module"; then
           echo "Module '${module}' already loaded."
-        elif [ "$module" != "cpu_microcode" ] && [ "$module" != "ipfw" ]; then
+        elif [ "$module" != "ipfw" ]; then
           if kldload "$module" 2>/dev/null; then
             echo "Module '${module}' successfully loaded."
           else
