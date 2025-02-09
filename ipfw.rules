@@ -8,7 +8,6 @@ fwcmd="/sbin/ipfw"
 
 # Define interfaces and ports
 bridge_if=""           # Adjust as needed for your bridge interface
-divert_port="none"     # Suricata divert port
 ssh_ips=""             # List of allowed SSH source IPs
 ssh_port=""            # SSH port to allow
 user_tcp_ports=""      # User TCP ports to allow
@@ -46,114 +45,133 @@ ipv6_available=$(ifconfig | grep -qF "inet6" && echo 1 || echo 0)
 ${fwcmd} -q flush
 
 #################################
-# Loopback Traffic and IPv6 Network Functionality
+# Loopback Traffic Handling
 #################################
 # Allow all traffic on the loopback interface (lo0)
 ${fwcmd} add 100 allow ip from any to any via lo0
 
-# Deny traffic to and from the IPv4 loopback network (127.0.0.0/8)
-${fwcmd} add 200 deny ip from any to 127.0.0.0/8
-${fwcmd} add 300 deny ip from 127.0.0.0/8 to any
-
-# IPv6 loopback and network functionality rules (if IPv6 is available)
-if [ "$ipv6_available" -eq 1 ]; then
-    # Deny traffic to and from the IPv6 loopback address (::1)
-    ${fwcmd} add 400 deny ip from any to ::1
-    ${fwcmd} add 500 deny ip from ::1 to any
-
-    # Deny routing header type 0 (RH0) to prevent amplification and redirection attacks (RFC5095)
-    ${fwcmd} add 600 deny log ip6 from any to any ext6hdr rthdr0
-
-    # Deny fragmented ICMPv6 Neighbor Discovery Protocol (NDP) packets to prevent DoS attacks (RFC6980)
-    ${fwcmd} add 700 deny log ipv6-icmp from any to any ext6hdr frag icmp6types 130,131,132,133,134,135,136,143
-
-    # Allow IPv6 Duplicate Address Detection (DAD) packets
-    ${fwcmd} add 800 allow ipv6-icmp from :: to ff02::/16
-
-    # Allow ICMPv6 Router Solicitation (RS), Router Advertisement (RA), Neighbor Solicitation (NS), and Neighbor Advertisement (NA) for link-local traffic
-    ${fwcmd} add 900 allow ipv6-icmp from fe80::/10 to fe80::/10
-    ${fwcmd} add 1000 allow ipv6-icmp from fe80::/10 to ff02::/16
-
-    # Allow ICMPv6 Neighbor Solicitation (NS) and Neighbor Advertisement (NA) for address resolution (unicast, link-local, and multicast)
-    ${fwcmd} add 1100 allow ipv6-icmp from any to any icmp6types 135,136
-fi
-
 #################################
-# Anti-DoS and Recon Prevention
-#################################
-# Block packets with IP options
-${fwcmd} add 1200 deny log ip from any to any ipoptions ssrr in
-${fwcmd} add 1210 deny log ip from any to any ipoptions lsrr in
-${fwcmd} add 1220 deny log ip from any to any ipoptions rr in
-${fwcmd} add 1230 deny log ip from any to any ipoptions ts in
-
-#################################
-# Block Banned and Spoofed IPs
+# IPFW Table Handling
 #################################
 # Deny traffic from Fail2Ban table
 ${fwcmd} table fail2ban create or-flush type addr
-${fwcmd} add 1300 deny log ip from 'table(fail2ban)' to any
-
-# Anti-spoofing: Deny traffic with invalid source addresses
-${fwcmd} add 1400 deny ip from any to any not verrevpath in
+${fwcmd} add 200 deny log ip from 'table(fail2ban)' to any
 
 #################################
-# Flood Protection and Traffic Shaping
+# ICMP Flood Protection
 #################################
 # Dummynet pipe to limit ICMPv4/ICMPv6 bandwidth
 ${fwcmd} pipe 1 config bw 100Kbit/s queue 1 droptail
 
 # Limit ICMPv4 echo requests and replies (ping flood protection)
-${fwcmd} add 1598 pipe 1 icmp from any to any icmptypes 8,0 in
+${fwcmd} add 300 pipe 1 icmp from any to me icmptypes 8,0 in
 
 # IPv6 ICMPv6 echo requests and replies (ping flood protection)
 if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 1698 pipe 1 ipv6-icmp from any to any icmp6types 128,129 in
-fi
+    ${fwcmd} add 400 pipe 1 ipv6-icmp from any to me6 icmp6types 128,129 in
 
-# Dummynet pipes to limit user bandwidth
-${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
-if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
-fi
-
-# Limit SSH connection bandwidth
-if [ -n "$ssh_ips" ] && [ -n "$ssh_port" ]; then
-    ${fwcmd} add 1798 pipe 2 ip4 from "$ssh_ips" to me "$ssh_port" proto tcp in
-    if [ "$ipv6_available" -eq 1 ]; then
-        ${fwcmd} add 1898 pipe 3 ip6 from "$ssh_ips" to me6 "$ssh_port" proto tcp in
-    fi
-fi
-
-# Limit user connection bandwidth
-if [ -n "$user_tcp_ports" ]; then
-    ${fwcmd} add 1998 pipe 2 ip4 from any to me "$user_tcp_ports" proto tcp in
-    if [ "$ipv6_available" -eq 1 ]; then
-        ${fwcmd} add 2098 pipe 3 ip6 from any to me6 "$user_tcp_ports" proto tcp in
-    fi
+    # Deny fragmented ICMPv6 Neighbor Discovery Protocol (NDP) packets to prevent DoS attacks (RFC6980)
+    ${fwcmd} add 500 deny log ipv6-icmp from any to any ext6hdr frag icmp6types 130,131,132,133,134,135,136,143
 fi
 
 #################################
 # Fragmented Packet Handling
 #################################
 # Reassemble fragmented packets
-${fwcmd} add 2100 reass ip from any to any in
+${fwcmd} add 600 reass ip from any to any
+
+#################################
+# User Traffic Shaping
+#################################
+# Dummynet pipes to limit user bandwidth
+${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
+if [ "$ipv6_available" -eq 1 ]; then
+    ${fwcmd} pipe 3 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
+fi
+
+# Limit user connection bandwidth
+if [ -n "$ssh_port" ] || [ -n "$user_tcp_ports" ]; then
+    pipe_ports=$(echo "$ssh_port,$user_tcp_ports" | sed -E 's/^,+//;s/,+$//')
+    ${fwcmd} add 700 pipe 2 ip4 from any to me "$pipe_ports" in
+    ${fwcmd} add 800 pipe 2 ip4 from me "$pipe_ports" to any out
+    if [ "$ipv6_available" -eq 1 ]; then
+        ${fwcmd} add 900 pipe 3 ip6 from any to me6 "$pipe_ports" in
+        ${fwcmd} add 1000 pipe 3 ip6 from me6 "$pipe_ports" to any out
+    fi
+fi
+
+#################################
+# Stateful Traffic Handling
+#################################
+# Check the state of all connections to allow established connections
+${fwcmd} add 1100 check-state
+
+#################################
+# Loopback Protection and IPv6 Network Functionality
+#################################
+# Deny traffic to and from the IPv4 loopback network (127.0.0.0/8)
+${fwcmd} add 1200 deny ip from any to 127.0.0.0/8
+${fwcmd} add 1210 deny ip from 127.0.0.0/8 to any
+
+# IPv6 loopback and network functionality rules (if IPv6 is available)
+if [ "$ipv6_available" -eq 1 ]; then
+    # Deny traffic to and from the IPv6 loopback address (::1)
+    ${fwcmd} add 1300 deny ip from any to ::1
+    ${fwcmd} add 1310 deny ip from ::1 to any
+
+    # Deny routing header type 0 (RH0) to prevent amplification and redirection attacks (RFC5095)
+    ${fwcmd} add 1400 deny log ip6 from any to any ext6hdr rthdr0
+
+    # Allow IPv6 Duplicate Address Detection (DAD) packets
+    ${fwcmd} add 1500 allow ipv6-icmp from :: to ff02::/16
+
+    # Allow ICMPv6 Router Solicitation (RS), Router Advertisement (RA), Neighbor Solicitation (NS), and Neighbor Advertisement (NA) for link-local traffic
+    ${fwcmd} add 1600 allow ipv6-icmp from fe80::/10 to fe80::/10
+    ${fwcmd} add 1700 allow ipv6-icmp from fe80::/10 to ff02::/16
+
+    # Allow ICMPv6 Neighbor Solicitation (NS) and Neighbor Advertisement (NA) for address resolution (unicast, link-local, and multicast)
+    ${fwcmd} add 1800 allow ipv6-icmp from any to any icmp6types 135,136
+fi
+
+#################################
+# Outbound Traffic
+#################################
+# Allow all ICMPv4 outbound
+${fwcmd} add 1900 allow icmp from any to any icmptypes 8 out record-state
+${fwcmd} add 1910 allow icmp from any to any out
+if [ "$ipv6_available" -eq 1 ]; then
+    # Allow all ICMPv6 outbound
+    ${fwcmd} add 2000 allow ipv6-icmp from any to any icmp6types 128 out record-state
+    ${fwcmd} add 2010 allow ipv6-icmp from any to any out
+fi
+
+# Allow all outbound traffic with stateful handling
+${fwcmd} add 2100 allow ip from any to any out record-state
+
+#################################
+# Block Banned and Spoofed IPs
+#################################
+# Anti-spoofing: Deny traffic with invalid source addresses
+${fwcmd} add 2200 deny ip from any to any not verrevpath in
+
+#################################
+# Anti-DoS and Recon Prevention
+#################################
+# Block packets with IP options
+${fwcmd} add 2300 deny log ip from any to any ipoptions ssrr in
+${fwcmd} add 2310 deny log ip from any to any ipoptions lsrr in
+${fwcmd} add 2320 deny log ip from any to any ipoptions rr in
+${fwcmd} add 2330 deny log ip from any to any ipoptions ts in
 
 #################################
 # ICMP Rules for Network Functionality
 #################################
 # Allow ICMPv4 Echo Reply, Destination Unreachable, Echo Request, and Time Exceeded
-${fwcmd} add 2200 allow icmp from any to any icmptypes 0,3,8,11 in
-
-# Allow all ICMPv4 outbound
-${fwcmd} add 2300 allow icmp from any to any out
+${fwcmd} add 2400 allow icmp from any to any icmptypes 0,3,8,11 in
 
 # Allow ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded, Echo Request/Reply, and RA
 if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 2400 allow ipv6-icmp from any to any icmp6types 1,2,3,128,129,133,134 in
-
-    # Allow all ICMPv6 outbound
-    ${fwcmd} add 2500 allow ipv6-icmp from any to any out
+    ${fwcmd} add 2500 allow ipv6-icmp from any to any icmp6types 1,2,3,128,129,133,134 in
 fi
 
 # Deny all other ICMPv4 and ICMPv6 traffic
@@ -163,28 +181,14 @@ if [ "$ipv6_available" -eq 1 ]; then
 fi
 
 #################################
-# Suricata Traffic Diversion (If Enabled)
-#################################
-if [ -n "$divert_port" ] && [ "$divert_port" != "none" ]; then
-    # Divert all traffic to Suricata for inline IPS processing
-    ${fwcmd} add 2800 divert "$divert_port" ip from any to any
-fi
-
-#################################
-# Stateful Traffic Handling
-#################################
-# Check the state of all connections to allow established connections
-${fwcmd} add 2900 check-state
-
-#################################
 # DHCP and Broadcast Traffic
 #################################
 # Allow DHCPv4 traffic
-${fwcmd} add 3000 allow ip4 from 0.0.0.0 68 to 255.255.255.255 67 proto udp
+${fwcmd} add 2800 allow ip4 from 0.0.0.0 68 to 255.255.255.255 67 proto udp
 
 # Allow DHCPv6 traffic (if IPv6 is available)
 if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 3100 allow ip6 from fe80::/10 546 to ff02::1:2 547 proto udp
+    ${fwcmd} add 2900 allow ip6 from fe80::/10 546 to ff02::1:2 547 proto udp
 fi
 
 #################################
@@ -192,24 +196,24 @@ fi
 #################################
 # Block inbound multicast traffic
 if [ -n "$multicast_ip4" ]; then
-    ${fwcmd} add 3200 deny ip from "$multicast_ip4" to any in
-    ${fwcmd} add 3210 deny ip from any to "$multicast_ip4" in
+    ${fwcmd} add 3000 deny ip from "$multicast_ip4" to any in
+    ${fwcmd} add 3010 deny ip from any to "$multicast_ip4" in
 fi
 if [ -n "$multicast_ip6" ] && [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 3300 deny ip from "$multicast_ip6" to any in
-    ${fwcmd} add 3310 deny ip from any to "$multicast_ip6" in
+    ${fwcmd} add 3100 deny ip from "$multicast_ip6" to any in
+    ${fwcmd} add 3110 deny ip from any to "$multicast_ip6" in
 fi
 
 # Block martian IP ranges
 if [ -n "$martians_ip4" ]; then
-    ${fwcmd} add 3400 deny ip from "$martians_ip4" to any in
-    ${fwcmd} add 3410 deny ip from any to "$martians_ip4" in
+    ${fwcmd} add 3200 deny ip from "$martians_ip4" to any in
+    ${fwcmd} add 3210 deny ip from any to "$martians_ip4" in
 fi
 if [ -n "$martians_ip6" ] && [ -n "$martians_ip6_2" ] && [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 3500 deny ip from "$martians_ip6" to any in
-    ${fwcmd} add 3510 deny ip from any to "$martians_ip6" in
-    ${fwcmd} add 3520 deny ip from "$martians_ip6_2" to any in
-    ${fwcmd} add 3530 deny ip from any to "$martians_ip6_2" in
+    ${fwcmd} add 3300 deny ip from "$martians_ip6" to any in
+    ${fwcmd} add 3310 deny ip from any to "$martians_ip6" in
+    ${fwcmd} add 3320 deny ip from "$martians_ip6_2" to any in
+    ${fwcmd} add 3330 deny ip from any to "$martians_ip6_2" in
 fi
 
 #################################
@@ -217,25 +221,25 @@ fi
 #################################
 # Allow new SSH connections from allowed source IPs to the firewall
 if [ -n "$ssh_ips" ] && [ -n "$ssh_port" ]; then
-    ${fwcmd} add 3599 count log ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in
-    ${fwcmd} add 3600 allow ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+    ${fwcmd} add 3399 count log ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in
+    ${fwcmd} add 3400 allow ip4 from "$ssh_ips" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
 fi
 
 # Allow user connections to the firewall, with source IP limit for DoS mitigation
 if [ -n "$user_tcp_ports" ]; then
-    ${fwcmd} add 3699 count log ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
-    ${fwcmd} add 3700 allow ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+    ${fwcmd} add 3499 count log ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
+    ${fwcmd} add 3500 allow ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
 
 # IPv6 SSH and user rules (if IPv6 is available)
 if [ "$ipv6_available" -eq 1 ]; then
     if [ -n "$ssh_ips" ] && [ -n "$ssh_port" ]; then
-        ${fwcmd} add 3799 count log ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in
-        ${fwcmd} add 3800 allow ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+        ${fwcmd} add 3599 count log ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in
+        ${fwcmd} add 3600 allow ip6 from "$ssh_ips" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
     fi
     if [ -n "$user_tcp_ports" ]; then
-        ${fwcmd} add 3899 count log ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
-        ${fwcmd} add 3900 allow ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+        ${fwcmd} add 3699 count log ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
+        ${fwcmd} add 3700 allow ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
     fi
 fi
 
@@ -244,28 +248,22 @@ fi
 #################################
 # Deny any inbound traffic to me that hasn't been explicitly allowed
 if [ "$log_default_deny" = "yes" ]; then
-    ${fwcmd} add 4000 deny log ip from any to me in
+    ${fwcmd} add 3800 deny log ip from any to me in
     if [ "$ipv6_available" -eq 1 ]; then
-        ${fwcmd} add 4100 deny log ip from any to me6 in
+        ${fwcmd} add 3900 deny log ip from any to me6 in
     fi
 else
-    ${fwcmd} add 4000 deny ip from any to me in
+    ${fwcmd} add 3800 deny ip from any to me in
     if [ "$ipv6_available" -eq 1 ]; then
-        ${fwcmd} add 4100 deny ip from any to me6 in
+        ${fwcmd} add 3900 deny ip from any to me6 in
     fi
 fi
 
 # Allow all traffic passing through the bridge interface (if available)
 if [ -n "$bridge_if" ] && ifconfig "$bridge_if" >/dev/null 2>&1; then
-    ${fwcmd} add 4200 allow ip from any to any tcpflags syn,!ack,!fin,!rst in via "$bridge_if" keep-state
-    ${fwcmd} add 4210 allow ip from any to any proto udp in via "$bridge_if" keep-state
+    ${fwcmd} add 4000 allow ip from any to any tcpflags syn,!ack,!fin,!rst in via "$bridge_if" record-state
+    ${fwcmd} add 4010 allow ip from any to any proto udp in via "$bridge_if" record-state
 fi
-
-#################################
-# Outbound Traffic
-#################################
-# Allow all outbound traffic with stateful handling
-${fwcmd} add 4300 allow ip from any to any out keep-state
 
 #################################
 # Final Rule: Deny all other traffic

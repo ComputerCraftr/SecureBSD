@@ -99,6 +99,10 @@ collect_user_input() {
   echo "Enter a comma-separated list of IPs allowed to SSH into the server, or type 'any' to allow all IPs (not recommended)."
   printf "Enter the admin IPs (comma-separated) for SSH access: "
   read -r admin_ips
+  if ! echo "$admin_ips" | grep -qE '^[0-9.a-f:,]+$|^any$'; then
+    echo "Invalid input. Please enter comma-separated IPs or 'any'."
+    return 1
+  fi
 
   # External network interface input (for IPFW and optionally Suricata)
   printf "Enter the external network interface for IPFW (and Suricata, if installed, e.g., em0, re0): "
@@ -126,9 +130,10 @@ collect_user_input() {
   fi
 
   # Suricata installation choice
-  echo "Do you want to install and configure Suricata? (yes/no)"
-  printf "Enter your choice (default: yes): "
-  read -r install_suricata
+  #echo "Do you want to install and configure Suricata? (yes/no)"
+  #printf "Enter your choice (default: yes): "
+  #read -r install_suricata
+  install_suricata="no"
   install_suricata="${install_suricata:-yes}"
   if [ "$install_suricata" != "no" ]; then
     if [ "$install_suricata" != "yes" ]; then
@@ -630,14 +635,19 @@ harden_sysctl() {
   settings=$(
     cat <<EOF
 net.link.bridge.pfil_bridge=1
+net.inet.icmp.drop_redirect=1
 net.inet.icmp.icmplim=50
 net.inet.tcp.blackhole=2
 net.inet.tcp.drop_synfin=1
 net.inet.tcp.syncookies=1
 net.inet.udp.blackhole=1
 net.inet.ip.random_id=1
+net.inet.ip.process_options=0
+net.inet.ip.redirect=0
 net.inet.ip.dummynet.io_fast=1
 net.inet.ip.fw.one_pass=0
+net.inet6.icmp6.rediraccept=0
+net.inet6.ip6.redirect=0
 net.inet6.ip6.use_tempaddr=1
 net.inet6.ip6.prefer_tempaddr=1
 kern.coredump=0
@@ -667,7 +677,7 @@ EOF
     key="${setting%%=*}"
 
     # Use sysctl -d to check if the key exists
-    if sysctl -d "$key" >/dev/null 2>&1; then
+    if echo "$key" | grep -qF "net.inet.ip.fw." || sysctl -d "$key" >/dev/null 2>&1; then
       if grep -q "^${key}" "$sysctl_conf"; then
         sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
       else
@@ -693,7 +703,6 @@ mac_bsdextended_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
 ipfw_load="YES"
-ipdivert_load="YES"
 dummynet_load="YES"
 EOF
   )
@@ -875,7 +884,6 @@ configure_ipfw() {
   # Define the ipfw.rules values to be set
   settings=$(
     cat <<EOF
-divert_port="$suricata_port"
 ssh_ips="$admin_ips"
 ssh_port="$admin_ssh_port"
 EOF
