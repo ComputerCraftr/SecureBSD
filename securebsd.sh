@@ -13,7 +13,7 @@ full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /
 # Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
 password_related_files="/etc/master.passwd"
 service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
-audit_log_files="/var/log /var/audit"
+audit_log_files="/var/audit"
 other_sensitive_files="/etc/ftpusers"
 sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files $other_sensitive_files"
 
@@ -635,6 +635,7 @@ harden_sysctl() {
   settings=$(
     cat <<EOF
 net.link.bridge.pfil_bridge=1
+net.inet.icmp.bmcastecho=0
 net.inet.icmp.drop_redirect=1
 net.inet.icmp.icmplim=50
 net.inet.tcp.blackhole=2
