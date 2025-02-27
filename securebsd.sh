@@ -223,33 +223,43 @@ configure_ssh() {
   echo "Configuring SSH security with public key and Google Authenticator authentication..."
   sshd_config="/etc/ssh/sshd_config"
 
-  # Apply SSH configuration changes
-  authentication_methods="AuthenticationMethods publickey,keyboard-interactive"
-  allow_users="AllowUsers $allowed_user"
-  client_alive_interval="ClientAliveInterval 60"
-  client_alive_count_max="ClientAliveCountMax 1"
-  sed -i '' -E \
-    -e "s/^#?PermitRootLogin .*/PermitRootLogin no/" \
-    -e "s/^#?MaxAuthTries .*/MaxAuthTries 3/" \
-    -e "s/^#?PasswordAuthentication .*/PasswordAuthentication no/" \
-    -e "s/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/" \
-    -e "s/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/" \
-    -e "s/^#?UsePAM .*/UsePAM yes/" \
-    -e "s/^#?UseDNS .*/UseDNS no/" \
-    -e "s/^#?AuthenticationMethods .*/$authentication_methods/" \
-    -e "s/^#?AllowUsers .*/$allow_users/" \
-    -e "s/^#?Port .*/Port $admin_ssh_port/" \
-    -e "s/^#?ClientAliveInterval .*/$client_alive_interval/" \
-    -e "s/^#?ClientAliveCountMax .*/$client_alive_count_max/" \
-    "$sshd_config"
+  # Define SSH settings as key-value pairs
+  settings="
+PermitRootLogin no
+MaxAuthTries 3
+PasswordAuthentication no
+KbdInteractiveAuthentication yes
+PubkeyAuthentication yes
+UsePAM yes
+UseDNS no
+AuthenticationMethods publickey,keyboard-interactive
+AllowUsers $allowed_user
+Port $admin_ssh_port
+ClientAliveInterval 60
+ClientAliveCountMax 1
+"
 
-  # Add necessary directives if not present
-  if ! grep -q "^$authentication_methods" "$sshd_config"; then
-    echo "$authentication_methods" | tee -a "$sshd_config" >/dev/null
-  fi
-  if ! grep -q "^$allow_users" "$sshd_config"; then
-    echo "$allow_users" | tee -a "$sshd_config" >/dev/null
-  fi
+  # Loop through each setting safely with line-by-line reading
+  echo "$settings" | while IFS= read -r setting; do
+    key=$(echo "$setting" | cut -d' ' -f1)
+    value=$(echo "$setting" | cut -d' ' -f2-)
+
+    # Check if the setting exists (including commented ones)
+    if grep -q "^#\?${key}" "$sshd_config"; then
+      if [ "$key" = "AllowUsers" ]; then
+        # Avoid adding duplicate users
+        if ! grep -q "^${key}.* ${value}.*" "$sshd_config"; then
+          sed -i '' "s|^#\?${key} .*|& $value|" "$sshd_config"
+        fi
+      else
+        # Replace existing setting
+        sed -i '' "s|^#\?${key} .*|${setting}|" "$sshd_config"
+      fi
+    else
+      # Add the setting if it doesn't exist
+      echo "$setting" | tee -a "$sshd_config" >/dev/null
+    fi
+  done
 
   echo "SSH configured to require public key and Google Authenticator authentication and disconnect inactive sessions."
 
