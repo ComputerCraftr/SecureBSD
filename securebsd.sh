@@ -245,11 +245,11 @@ ClientAliveCountMax 1
     value=$(echo "$setting" | cut -d' ' -f2-)
 
     # Check if the setting exists (including commented ones)
-    if grep -q "^#\?${key}" "$sshd_config"; then
+    if grep -q "^#\?${key} " "$sshd_config"; then
       if [ "$key" = "AllowUsers" ]; then
-        # Avoid adding duplicate users
-        if ! grep -q "^${key}.* ${value}.*" "$sshd_config"; then
-          sed -i '' "s|^#\?${key} .*|& $value|" "$sshd_config"
+        # Ensure we only add user if not already in the list
+        if ! grep -Eq "^${key}\b.*\b${value}\b" "$sshd_config"; then
+          sed -i '' "s|^#\?${key} \(.*\)|${setting} \1|" "$sshd_config"
         fi
       else
         # Replace existing setting
@@ -689,8 +689,8 @@ EOF
 
     # Use sysctl -d to check if the key exists
     if echo "$key" | grep -qF "net.inet.ip.fw." || sysctl -d "$key" >/dev/null 2>&1; then
-      if grep -q "^${key}" "$sysctl_conf"; then
-        sed -i '' "s|^${key}.*|${setting}|" "$sysctl_conf"
+      if grep -q "^${key}=" "$sysctl_conf"; then
+        sed -i '' "s|^${key}=.*|${setting}|" "$sysctl_conf"
       else
         echo "$setting" | tee -a "$sysctl_conf" >/dev/null
       fi
@@ -793,8 +793,8 @@ EOF
       fi
 
       # Update or append the loader.conf entry
-      if grep -q "^${key}" "$loader_conf"; then
-        sed -i '' "s|^${key}.*|${setting}|" "$loader_conf"
+      if grep -q "^${key}=" "$loader_conf"; then
+        sed -i '' "s|^${key}=.*|${setting}|" "$loader_conf"
       else
         echo "$setting" | tee -a "$loader_conf" >/dev/null
       fi
@@ -906,8 +906,8 @@ EOF
       key="${setting%%=*}"
 
       # Update the ipfw.rules variable
-      if grep -q "^${key}" "$local_ipfw_rules"; then
-        sed -i '' "s|^${key}.*|${setting}|" "$local_ipfw_rules"
+      if grep -q "^${key}=" "$local_ipfw_rules"; then
+        sed -i '' "s|^${key}=.*|${setting}|" "$local_ipfw_rules"
       fi
     done
   else
