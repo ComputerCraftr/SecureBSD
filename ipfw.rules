@@ -185,10 +185,12 @@ fi
 #################################
 # Allow DHCPv4 traffic
 ${fwcmd} add 2800 allow ip4 from 0.0.0.0 68 to 255.255.255.255 67 proto udp
+${fwcmd} add 2810 allow ip4 from any 67 to any 68 proto udp
 
 # Allow DHCPv6 traffic (if IPv6 is available)
 if [ "$ipv6_available" -eq 1 ]; then
     ${fwcmd} add 2900 allow ip6 from fe80::/10 546 to ff02::1:2 547 proto udp
+    ${fwcmd} add 2910 allow ip6 from fe80::/10 547 to fe80::/10 546 proto udp
 fi
 
 #################################
