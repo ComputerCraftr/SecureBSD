@@ -90,13 +90,13 @@ if [ "$ipv6_available" -eq 1 ]; then
 fi
 
 # Limit user connection bandwidth
-if [ -n "$ssh_port" ] || [ -n "$user_tcp_ports" ]; then
-    pipe_ports=$(echo "$ssh_port,$user_tcp_ports" | sed -E 's/^,+//;s/,+$//')
-    ${fwcmd} add 700 pipe 2 ip4 from any to me "$pipe_ports" in
-    ${fwcmd} add 800 pipe 2 ip4 from me "$pipe_ports" to any out
+if [ -n "$user_tcp_ports" ]; then
+    #pipe_ports=$(echo "$ssh_port,$user_tcp_ports" | sed -E 's/^,+//;s/,+$//')
+    ${fwcmd} add 700 pipe 2 ip4 from any to me "$user_tcp_ports" in
+    ${fwcmd} add 800 pipe 2 ip4 from me "$user_tcp_ports" to any out
     if [ "$ipv6_available" -eq 1 ]; then
-        ${fwcmd} add 900 pipe 3 ip6 from any to me6 "$pipe_ports" in
-        ${fwcmd} add 1000 pipe 3 ip6 from me6 "$pipe_ports" to any out
+        ${fwcmd} add 900 pipe 3 ip6 from any to me6 "$user_tcp_ports" in
+        ${fwcmd} add 1000 pipe 3 ip6 from me6 "$user_tcp_ports" to any out
     fi
 fi
 
