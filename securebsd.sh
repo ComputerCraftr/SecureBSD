@@ -347,7 +347,7 @@ ClientAliveCountMax 1
 configure_ssh_pam() {
   echo "Configuring SSH PAM for Google Authenticator..."
   pam_sshd_config="/etc/pam.d/sshd"
-  ga_pam_line="auth required pam_google_authenticator.so"
+  ga_pam_line="auth requisite pam_google_authenticator.so"
 
   # Check if pam_google_authenticator.so is already present
   if grep -q "^$ga_pam_line" "$pam_sshd_config"; then
