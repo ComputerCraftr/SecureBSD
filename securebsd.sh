@@ -1011,8 +1011,8 @@ main() {
   update_and_install_packages
   configure_password_and_umask
   configure_ssh
-  configure_ssh_pam
   configure_google_auth
+  configure_ssh_pam
   configure_sudo
   configure_fail2ban
   if [ "$install_suricata" = "yes" ]; then
