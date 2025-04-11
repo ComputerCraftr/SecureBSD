@@ -347,7 +347,7 @@ ClientAliveCountMax 1
 configure_ssh_pam() {
   echo "Configuring SSH PAM for Google Authenticator..."
   pam_sshd_config="/etc/pam.d/sshd"
-  ga_pam_line="auth required pam_google_authenticator.so"
+  ga_pam_line="auth requisite pam_google_authenticator.so"
 
   # Check if pam_google_authenticator.so is already present
   if grep -q "^$ga_pam_line" "$pam_sshd_config"; then
@@ -946,7 +946,7 @@ configure_cron_updates() {
   # Define cron jobs
   suricata_cmd="suricata-update"
   freebsd_update_cmd="PAGER=cat freebsd-update cron"
-  pkg_update_cmd="pkg update && pkg upgrade -y"
+  pkg_update_cmd="pkg upgrade -y"
   suricata_cron="0 2 * * 0 $suricata_cmd"
   freebsd_update_cron="0 3 * * 0 $freebsd_update_cmd"
   pkg_update_cron="0 4 * * 0 $pkg_update_cmd"
@@ -1011,8 +1011,8 @@ main() {
   update_and_install_packages
   configure_password_and_umask
   configure_ssh
-  configure_ssh_pam
   configure_google_auth
+  configure_ssh_pam
   configure_sudo
   configure_fail2ban
   if [ "$install_suricata" = "yes" ]; then
