@@ -10,6 +10,7 @@ fwcmd="/sbin/ipfw"
 bridge_if=""           # Adjust as needed for your bridge interface
 ssh_ips=""             # List of allowed SSH source IPs
 ssh_port=""            # SSH port to allow
+dhcp_ips="any"         # List of allowed DHCP server IPs
 user_tcp_ports=""      # User TCP ports to allow
 log_default_deny="yes" # Whether to log the default deny rules
 
@@ -90,13 +91,13 @@ if [ "$ipv6_available" -eq 1 ]; then
 fi
 
 # Limit user connection bandwidth
-if [ -n "$ssh_port" ] || [ -n "$user_tcp_ports" ]; then
-    pipe_ports=$(echo "$ssh_port,$user_tcp_ports" | sed -E 's/^,+//;s/,+$//')
-    ${fwcmd} add 700 pipe 2 ip4 from any to me "$pipe_ports" in
-    ${fwcmd} add 800 pipe 2 ip4 from me "$pipe_ports" to any out
+if [ -n "$user_tcp_ports" ]; then
+    #pipe_ports=$(echo "$ssh_port,$user_tcp_ports" | sed -E 's/^,+//;s/,+$//')
+    ${fwcmd} add 700 pipe 2 ip4 from any to me "$user_tcp_ports" in
+    ${fwcmd} add 800 pipe 2 ip4 from me "$user_tcp_ports" to any out
     if [ "$ipv6_available" -eq 1 ]; then
-        ${fwcmd} add 900 pipe 3 ip6 from any to me6 "$pipe_ports" in
-        ${fwcmd} add 1000 pipe 3 ip6 from me6 "$pipe_ports" to any out
+        ${fwcmd} add 900 pipe 3 ip6 from any to me6 "$user_tcp_ports" in
+        ${fwcmd} add 1000 pipe 3 ip6 from me6 "$user_tcp_ports" to any out
     fi
 fi
 
@@ -149,46 +150,48 @@ fi
 ${fwcmd} add 2100 allow ip from any to any out record-state
 
 #################################
-# Block Banned and Spoofed IPs
-#################################
-# Anti-spoofing: Deny traffic with invalid source addresses
-${fwcmd} add 2200 deny ip from any to any not verrevpath in
-
-#################################
 # Anti-DoS and Recon Prevention
 #################################
 # Block packets with IP options
-${fwcmd} add 2300 deny log ip from any to any ipoptions ssrr in
-${fwcmd} add 2310 deny log ip from any to any ipoptions lsrr in
-${fwcmd} add 2320 deny log ip from any to any ipoptions rr in
-${fwcmd} add 2330 deny log ip from any to any ipoptions ts in
-
-#################################
-# ICMP Rules for Network Functionality
-#################################
-# Allow ICMPv4 Echo Reply, Destination Unreachable, Echo Request, and Time Exceeded
-${fwcmd} add 2400 allow icmp from any to any icmptypes 0,3,8,11 in
-
-# Allow ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded, Echo Request/Reply, and RA
-if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 2500 allow ipv6-icmp from any to any icmp6types 1,2,3,128,129,133,134 in
-fi
-
-# Deny all other ICMPv4 and ICMPv6 traffic
-${fwcmd} add 2600 deny log icmp from any to any in
-if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 2700 deny log ipv6-icmp from any to any in
-fi
+${fwcmd} add 2200 deny log ip from any to any ipoptions ssrr in
+${fwcmd} add 2210 deny log ip from any to any ipoptions lsrr in
+${fwcmd} add 2220 deny log ip from any to any ipoptions rr in
+${fwcmd} add 2230 deny log ip from any to any ipoptions ts in
 
 #################################
 # DHCP and Broadcast Traffic
 #################################
 # Allow DHCPv4 traffic
-${fwcmd} add 2800 allow ip4 from 0.0.0.0 68 to 255.255.255.255 67 proto udp
+${fwcmd} add 2300 allow ip4 from 0.0.0.0 68 to 255.255.255.255 67 proto udp
+${fwcmd} add 2310 allow ip4 from "$dhcp_ips" 67 to any 68 proto udp
 
 # Allow DHCPv6 traffic (if IPv6 is available)
 if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 2900 allow ip6 from fe80::/10 546 to ff02::1:2 547 proto udp
+    ${fwcmd} add 2400 allow ip6 from fe80::/10 546 to ff02::1:2 547 proto udp
+    ${fwcmd} add 2410 allow ip6 from fe80::/10 547 to fe80::/10 546 proto udp
+fi
+
+#################################
+# Block Banned and Spoofed IPs
+#################################
+# Anti-spoofing: Deny traffic with invalid source addresses
+${fwcmd} add 2500 deny ip from any to any not verrevpath in
+
+#################################
+# ICMP Rules for Network Functionality
+#################################
+# Allow ICMPv4 Echo Reply, Destination Unreachable, Echo Request, and Time Exceeded
+${fwcmd} add 2600 allow icmp from any to any icmptypes 0,3,8,11 in
+
+# Allow ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded, Echo Request/Reply, and RA
+if [ "$ipv6_available" -eq 1 ]; then
+    ${fwcmd} add 2700 allow ipv6-icmp from any to any icmp6types 1,2,3,128,129,133,134 in
+fi
+
+# Deny all other ICMPv4 and ICMPv6 traffic
+${fwcmd} add 2800 deny log icmp from any to any in
+if [ "$ipv6_available" -eq 1 ]; then
+    ${fwcmd} add 2900 deny log ipv6-icmp from any to any in
 fi
 
 #################################
