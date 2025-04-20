@@ -105,9 +105,33 @@ collect_user_input() {
   fi
 
   # External network interface input (for IPFW and optionally Suricata)
-  printf "Enter the external network interface for IPFW (and Suricata, if installed, e.g., em0, re0): "
+  echo "Set the external network interface for IPFW (and Suricata, if installed). Type 'none' if not applicable (default: none)."
+  printf "Enter the external network interface (e.g., em0, re0): "
   read -r external_interface
-  validate_interface "$external_interface"
+  external_interface="${external_interface:-none}"
+  if [ "$external_interface" != "none" ]; then
+    validate_interface "$external_interface"
+  else
+    install_suricata="no"
+  fi
+
+  # VPN tunnel network interface input (for IPFW)
+  echo "Set the VPN tunnel network interface for IPFW. Type 'none' if not using a VPN (default: none)."
+  printf "Enter the VPN tunnel network interface (e.g., tun0): "
+  read -r tunnel_interface
+  tunnel_interface="${tunnel_interface:-none}"
+  if [ "$tunnel_interface" != "none" ]; then
+    validate_interface "$tunnel_interface"
+  fi
+
+  # Internal network interface input (for IPFW filtering bridge)
+  echo "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)."
+  printf "Enter the internal network interface (e.g., bridge0): "
+  read -r internal_interface
+  internal_interface="${internal_interface:-none}"
+  if [ "$internal_interface" != "none" ]; then
+    validate_interface "$internal_interface"
+  fi
 
   echo "Do you want to install security auditing tools? (yes/no)"
   printf "Enter your choice (default: yes): "
@@ -895,6 +919,9 @@ configure_ipfw() {
   # Define the ipfw.rules values to be set
   settings=$(
     cat <<EOF
+ext_if="$external_interface"
+tun_if="$tunnel_interface"
+int_if="$internal_interface"
 ssh_ips="$admin_ips"
 ssh_port="$admin_ssh_port"
 EOF
