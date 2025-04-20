@@ -82,7 +82,7 @@ ${fwcmd} add 200 deny log ip from 'table(fail2ban)' to any
 # Fragmented Packet Handling
 #################################
 # Reassemble fragmented IPv4 packets
-${fwcmd} add 300 reass ip from any to any in
+${fwcmd} add 300 reass ip4 from any to any in
 
 #################################
 # IPv6 Network Security
