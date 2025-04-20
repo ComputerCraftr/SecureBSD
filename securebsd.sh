@@ -796,7 +796,7 @@ EOF
     if [ "$module" = "not_a_module" ] || [ -f "$module_path" ] || [ -f "$module_alt_path" ]; then
       if [ "$module" != "not_a_module" ]; then
         # Attempt to detect the registered name using kldstat -v (only if the module is loaded)
-        registered_name=$(kldstat -v 2>/dev/null | awk -v mod="$module" '$0 ~ mod && !($NF ~ /\.ko/) {print $NF}')
+        registered_name=$(kldstat -v 2>/dev/null | awk -v mod="^${module}$" '$NF ~ mod && !($NF ~ /\.ko/) {print $NF; exit}')
 
         # If no registered name is found, use the default name
         if [ -n "$registered_name" ]; then
