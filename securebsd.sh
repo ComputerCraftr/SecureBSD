@@ -95,12 +95,21 @@ collect_user_input() {
   admin_ssh_port="${admin_ssh_port:-2222}"
   validate_port "$admin_ssh_port"
 
-  # Admin IPs input
-  echo "Enter a comma-separated list of IPs allowed to SSH into the server, or type 'any' to allow all IPs (not recommended)."
-  printf "Enter the admin IPs (comma-separated) for SSH access: "
-  read -r admin_ips
-  if ! echo "$admin_ips" | grep -qE '^[0-9.a-f:,]+$|^any$'; then
-    echo "Invalid input. Please enter comma-separated IPs or 'any'."
+  # Admin IPv4 input
+  echo "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
+  printf "Enter the admin IPv4 addresses (comma-separated) for SSH access: "
+  read -r admin_ipv4
+  if ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
+    echo "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
+    return 1
+  fi
+
+  # Admin IPv6 input
+  echo "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
+  printf "Enter the admin IPv6 addresses (comma-separated) for SSH access: "
+  read -r admin_ipv6
+  if ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
+    echo "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
     return 1
   fi
 
@@ -921,8 +930,9 @@ configure_ipfw() {
 ext_if="$external_interface"
 tun_if="$tunnel_interface"
 int_if="$internal_interface"
-ssh_ips="$admin_ips"
-ssh_port="$admin_ssh_port"
+ssh_ip4="$admin_ipv4"
+ssh_ip6="$admin_ipv6"
+ssh_tcp_port="$admin_ssh_port"
 EOF
   )
 
