@@ -126,9 +126,9 @@ fi
 # NAT traffic from the tunnel/external interface to the internal interface
 if [ "$int_if_available" -eq 1 ]; then
     if [ "$tun_if_available" -eq 1 ]; then
-        ${fwcmd} add 900 nat 1 ip4 from any to any in recv "$tun_if"
+        ${fwcmd} add 900 nat 1 ip4 from any to any via "$tun_if"
     elif [ "$ext_if_available" -eq 1 ]; then
-        ${fwcmd} add 900 nat 1 ip4 from any to any in recv "$ext_if"
+        ${fwcmd} add 900 nat 1 ip4 from any to any via "$ext_if"
     fi
 fi
 
@@ -206,15 +206,6 @@ fi
 #################################
 # Outbound Traffic
 #################################
-# NAT traffic from the internal interface to the tunnel/external interface
-if [ "$int_if_available" -eq 1 ]; then
-    if [ "$tun_if_available" -eq 1 ]; then
-        ${fwcmd} add 2000 nat 1 ip4 from any to any out recv "$int_if" xmit "$tun_if"
-    elif [ "$ext_if_available" -eq 1 ]; then
-        ${fwcmd} add 2000 nat 1 ip4 from any to any out recv "$int_if" xmit "$ext_if"
-    fi
-fi
-
 # Limit outbound traffic if the VPN is active
 if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_available" -eq 1 ]; then
     # Allow all ICMPv4 outbound
