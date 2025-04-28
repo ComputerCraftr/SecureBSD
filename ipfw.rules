@@ -190,16 +190,16 @@ if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_
     # Allow outbound traffic to the VPN endpoints/proxies
     if [ -n "$vpn_endpoints_ip4" ] && [ "$vpn_endpoints_ip4" != "none" ]; then
         if [ -n "$vpn_tcp_port" ] && [ "$vpn_tcp_port" != "none" ]; then
-            ${fwcmd} add 1920 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_tcp_port" tcpflags syn,!ack,!fin,!rst out xmit "$ext_if" record-state
+            ${fwcmd} add 2000 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_tcp_port" tcpflags syn,!ack,!fin,!rst out xmit "$ext_if" record-state
         fi
         if [ -n "$vpn_udp_port" ] && [ "$vpn_udp_port" != "none" ]; then
-            ${fwcmd} add 1930 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_udp_port" proto udp out xmit "$ext_if" record-state
+            ${fwcmd} add 2010 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_udp_port" proto udp out xmit "$ext_if" record-state
         fi
     fi
 
     # Allow outbound traffic to the VPN setup DNS servers
     if [ -n "$vpn_dns_ip4" ] && [ "$vpn_dns_ip4" != "none" ]; then
-        ${fwcmd} add 1940 allow ip4 from me to "$vpn_dns_ip4" 53 proto udp out xmit "$ext_if" record-state
+        ${fwcmd} add 2020 allow ip4 from me to "$vpn_dns_ip4" 53 proto udp out xmit "$ext_if" record-state
     fi
 fi
 
