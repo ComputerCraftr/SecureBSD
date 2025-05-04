@@ -201,7 +201,7 @@ if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_
 
     # Allow outbound traffic to the VPN setup DNS servers
     if [ -n "$vpn_dns_ip4" ] && [ "$vpn_dns_ip4" != "none" ]; then
-        ${fwcmd} add 2020 allow ip4 from me to "$vpn_dns_ip4" 53 proto udp out xmit "$ext_if" record-state
+        ${fwcmd} add 2040 allow ip4 from me to "$vpn_dns_ip4" 53 proto udp out xmit "$ext_if" record-state
     fi
 fi
 
