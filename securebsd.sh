@@ -979,11 +979,11 @@ configure_cron_updates() {
 
   # Define cron jobs
   suricata_cmd="suricata-update"
-  freebsd_update_cmd="PAGER=cat freebsd-update cron"
+  freebsd_update_cmd="freebsd-update cron"
   pkg_update_cmd="pkg upgrade -y"
-  suricata_cron="0 2 * * 0 $suricata_cmd"
-  freebsd_update_cron="0 3 * * 0 $freebsd_update_cmd"
-  pkg_update_cron="0 4 * * 0 $pkg_update_cmd"
+  suricata_cron="0 2 * * 0 $suricata_cmd 2>&1 | logger -t suricata-update -p cron.notice"
+  freebsd_update_cron="0 3 * * 0 $freebsd_update_cmd 2>&1 | logger -t freebsd-update -p cron.notice"
+  pkg_update_cron="0 4 * * 0 $pkg_update_cmd 2>&1 | logger -t pkg-upgrade -p cron.notice"
 
   # Temporary file to store updated crontab, specify /tmp directory explicitly
   temp_crontab=$(mktemp /tmp/root_crontab.XXXXXX)
