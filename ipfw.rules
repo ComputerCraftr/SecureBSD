@@ -14,18 +14,18 @@ vpn_endpoints_ip4="" # List of allowed VPN endpoints/proxies
 vpn_tcp_port=""      # VPN TCP port to allow outbound
 vpn_udp_port=""      # VPN UDP port to allow outbound
 vpn_dns_ip4="9.9.9.9,\
-149.112.112.112"                 # List of allowed VPN setup DNS servers
-ssh_ip4=""                       # List of allowed SSH source IPv4 addresses
-ssh_ip6=""                       # List of allowed SSH source IPv6 addresses
-ssh_tcp_port=""                  # SSH TCP port to allow
-dhcp_ip4="any"                   # List of allowed DHCP server IPv4 addresses
-user_tcp_ports=""                # User TCP ports to allow
-user_udp_ports=""                # User UDP ports to allow
-lan_tcp_ports=""                 # LAN TCP ports to allow
-lan_udp_ports=""                 # LAN UDP ports to allow
-pipe_tcp_ports="$user_tcp_ports" # TCP ports to limit bandwidth
-pipe_udp_ports="$user_udp_ports" # UDP ports to limit bandwidth
-log_default_deny="yes"           # Whether to log the default deny rules
+149.112.112.112"                # List of allowed VPN setup DNS servers
+ssh_ip4=""                      # List of allowed SSH source IPv4 addresses
+ssh_ip6=""                      # List of allowed SSH source IPv6 addresses
+ssh_tcp_port=""                 # SSH TCP port to allow
+dhcp_ip4="any"                  # List of allowed DHCP server IPv4 addresses
+wan_tcp_ports=""                # User TCP ports to allow
+wan_udp_ports=""                # User UDP ports to allow
+lan_tcp_ports=""                # LAN TCP ports to allow
+lan_udp_ports=""                # LAN UDP ports to allow
+pipe_tcp_ports="$wan_tcp_ports" # TCP ports to limit bandwidth
+pipe_udp_ports="$wan_udp_ports" # UDP ports to limit bandwidth
+log_default_deny="yes"          # Whether to log the default deny rules
 
 # Define martian (and multicast) IP ranges to deny
 martians_ip4="0.0.0.0/8,\
@@ -144,12 +144,23 @@ ${fwcmd} add 1000 check-state
 # Dummynet pipe to limit ICMPv4/ICMPv6 bandwidth
 ${fwcmd} pipe 3 config bw 100Kbit/s queue 1 droptail
 
-# Limit ICMPv4 echo requests and replies (ping flood protection)
-${fwcmd} add 1100 pipe 3 icmp from any to me icmptypes 8,0 in
+# Don't throttle the internal bridge interface (if available)
+if [ "$int_if_available" -eq 1 ]; then
+    # Limit ICMPv4 echo requests and replies (ping flood protection)
+    ${fwcmd} add 1100 pipe 3 icmp from any to me icmptypes 8,0 in not recv "$int_if"
 
-# IPv6 ICMPv6 echo requests and replies (ping flood protection)
-if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} add 1200 pipe 3 ipv6-icmp from any to me6 icmp6types 128,129 in
+    # IPv6 ICMPv6 echo requests and replies (ping flood protection)
+    if [ "$ipv6_available" -eq 1 ]; then
+        ${fwcmd} add 1200 pipe 3 ipv6-icmp from any to me6 icmp6types 128,129 in not recv "$int_if"
+    fi
+else
+    # Limit ICMPv4 echo requests and replies (ping flood protection)
+    ${fwcmd} add 1100 pipe 3 icmp from any to me icmptypes 8,0 in
+
+    # IPv6 ICMPv6 echo requests and replies (ping flood protection)
+    if [ "$ipv6_available" -eq 1 ]; then
+        ${fwcmd} add 1200 pipe 3 ipv6-icmp from any to me6 icmp6types 128,129 in
+    fi
 fi
 
 #################################
@@ -169,7 +180,10 @@ if [ "$ipv6_available" -eq 1 ]; then
     ${fwcmd} add 1500 deny log ipv6-icmp from any to any ext6hdr frag icmp6types 130,131,132,133,134,135,136,137,138,141,142,143
 
     # Deny all fragmented packets going to link-local or multicast scope — protects against ND and MLD evasion
-    ${fwcmd} add 1600 deny log ipv6-icmp from any to "fe80::/10,ff00::/8" ext6hdr frag
+    ${fwcmd} add 1510 deny log ipv6-icmp from any to "fe80::/10,ff00::/8" ext6hdr frag
+
+    # Deny MLDv1 listener report and listener done packets
+    ${fwcmd} add 1600 deny ipv6-icmp from any to any icmp6types 131,132
 
     # Allow ICMPv6 Neighbor Solicitation (NS) and Neighbor Advertisement (NA) for address resolution (unicast, link-local, and multicast)
     ${fwcmd} add 1700 allow ipv6-icmp from any to any icmp6types 135,136
@@ -318,12 +332,12 @@ if [ -n "$ssh_ip4" ] && [ "$ssh_ip4" != "none" ] && [ -n "$ssh_tcp_port" ] && [ 
 fi
 
 # Allow user connections to the firewall, with source IP limit for DoS mitigation
-if [ -n "$user_tcp_ports" ] && [ "$user_tcp_ports" != "none" ]; then
-    ${fwcmd} add 3699 count log ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
-    ${fwcmd} add 3700 allow ip4 from any to me "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+if [ -n "$wan_tcp_ports" ] && [ "$wan_tcp_ports" != "none" ]; then
+    ${fwcmd} add 3699 count log ip4 from any to me "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in
+    ${fwcmd} add 3700 allow ip4 from any to me "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
-if [ -n "$user_udp_ports" ] && [ "$user_udp_ports" != "none" ]; then
-    ${fwcmd} add 3710 allow ip4 from any to me "$user_udp_ports" proto udp in limit src-addr 10
+if [ -n "$wan_udp_ports" ] && [ "$wan_udp_ports" != "none" ]; then
+    ${fwcmd} add 3710 allow ip4 from any to me "$wan_udp_ports" proto udp in limit src-addr 10
 fi
 if [ -n "$lan_tcp_ports" ] && [ "$lan_tcp_ports" != "none" ] && [ "$int_if_available" -eq 1 ]; then
     ${fwcmd} add 3720 allow ip4 from any to me "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$int_if" limit src-addr 10
@@ -338,12 +352,12 @@ if [ "$ipv6_available" -eq 1 ]; then
         ${fwcmd} add 3799 count log ip6 from "$ssh_ip6" to me6 "$ssh_tcp_port" tcpflags syn,!ack,!fin,!rst in
         ${fwcmd} add 3800 allow ip6 from "$ssh_ip6" to me6 "$ssh_tcp_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
     fi
-    if [ -n "$user_tcp_ports" ] && [ "$user_tcp_ports" != "none" ]; then
-        ${fwcmd} add 3899 count log ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in
-        ${fwcmd} add 3900 allow ip6 from any to me6 "$user_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
+    if [ -n "$wan_tcp_ports" ] && [ "$wan_tcp_ports" != "none" ]; then
+        ${fwcmd} add 3899 count log ip6 from any to me6 "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in
+        ${fwcmd} add 3900 allow ip6 from any to me6 "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
     fi
-    if [ -n "$user_udp_ports" ] && [ "$user_udp_ports" != "none" ]; then
-        ${fwcmd} add 3910 allow ip6 from any to me6 "$user_udp_ports" proto udp in limit src-addr 10
+    if [ -n "$wan_udp_ports" ] && [ "$wan_udp_ports" != "none" ]; then
+        ${fwcmd} add 3910 allow ip6 from any to me6 "$wan_udp_ports" proto udp in limit src-addr 10
     fi
     if [ -n "$lan_tcp_ports" ] && [ "$lan_tcp_ports" != "none" ] && [ "$int_if_available" -eq 1 ]; then
         ${fwcmd} add 3920 allow ip6 from any to me6 "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$int_if" limit src-addr 10
