@@ -261,10 +261,11 @@ ${fwcmd} add 2430 deny log ip from any to any ipoptions ts in
 #################################
 # DHCP and Broadcast Traffic
 #################################
-# Allow DHCPv4 traffic (inbound/outbound)
+# Allow DHCPv4 traffic (outbound/inbound)
 if [ -n "$dhcp_ip4" ] && [ "$dhcp_ip4" != "none" ]; then
     ${fwcmd} add 2500 allow ip4 from 0.0.0.0 68 to 255.255.255.255 67 proto udp
-    ${fwcmd} add 2510 allow ip4 from "$dhcp_ip4" 67 to any 68 proto udp
+    ${fwcmd} add 2510 allow ip4 from me 68 to "$dhcp_ip4" 67 proto udp out
+    ${fwcmd} add 2520 allow ip4 from "$dhcp_ip4" 67 to any 68 proto udp
 fi
 
 # Allow DHCPv6 traffic (if IPv6 is available)
@@ -386,7 +387,7 @@ fi
 # Allow all traffic passing through the internal bridge interface (if available)
 if [ "$int_if_available" -eq 1 ]; then
     ${fwcmd} add 4200 allow ip from any to any tcpflags syn,!ack,!fin,!rst in recv "$int_if" record-state
-    ${fwcmd} add 4210 allow ip from any to any proto udp in recv "$int_if" record-state
+    ${fwcmd} add 4210 allow \{ udp or igmp \} from any to any in recv "$int_if" record-state
 fi
 
 #################################
