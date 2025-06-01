@@ -281,11 +281,11 @@ ClientAliveCountMax 1
       if [ "$key" = "AllowUsers" ]; then
         # Ensure we only add user if not already in the list
         if ! grep -qE "^${key}\b.*\b${value}\b" "$sshd_config"; then
-          sed -i '' "s|^#\?${key} \(.*\)|${setting} \1|" "$sshd_config"
+          sed -i '' -E "s|^#?${key} (.*)|${setting} \1|" "$sshd_config"
         fi
       else
         # Replace existing setting
-        sed -i '' "s|^#\?${key} .*|${setting}|" "$sshd_config"
+        sed -i '' -E "s|^#?${key} .*|${setting}|" "$sshd_config"
       fi
     else
       # Add the setting if it doesn't exist
