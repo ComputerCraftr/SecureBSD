@@ -427,8 +427,8 @@ configure_ssh_pam() {
   fi
 
   # Replace the sshd config file atomically
+  chmod 644 "$pam_sshd_config.tmp"
   mv "$pam_sshd_config.tmp" "$pam_sshd_config"
-  chmod 644 "$pam_sshd_config"
 
   echo "Google Authenticator added to the auth section of PAM SSH configuration."
 }
@@ -861,20 +861,23 @@ configure_password_and_umask() {
     return 1
   fi
 
+  # Check if Blowfish hashing is already enabled
+  blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' /etc/login.conf && echo 1 || echo 0)
+
   # Set Blowfish password hashing, secure umask, and password expiration in one pass
-  awk -v new_passwd_format="passwd_format=blf:" -v new_umask="umask=027:" -v password_expiration="${password_expiration:-none}" '
+  awk -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}" '
     BEGIN { in_default = 0; passwordtime_present = 0 }
     # Start processing the "default" block
     /^default:/ { in_default = 1 }
     in_default {
       # Update passwd_format
-      if ($0 ~ /:passwd_format=/) sub(/passwd_format=[^:]+:/, new_passwd_format);
+      if ($0 ~ /:passwd_format=/) sub(/:passwd_format=[^:]+:/, ":passwd_format=" new_passwd_format ":");
       # Update umask
-      if ($0 ~ /:umask=/) sub(/umask=[0-9]+:/, new_umask);
+      if ($0 ~ /:umask=/) sub(/:umask=[0-9]+:/, ":umask=" new_umask ":");
       # Update passwordtime if it exists
       if ($0 ~ /:passwordtime=/) {
         passwordtime_present = 1;
-        if (password_expiration != "none") sub(/passwordtime=[^:]+:/, "passwordtime=" password_expiration ":");
+        if (password_expiration != "none") sub(/:passwordtime=[^:]+:/, ":passwordtime=" password_expiration ":");
       }
       # Append passwordtime if missing and the block ends
       if ($0 !~ /:\\$/) {
@@ -896,8 +899,8 @@ configure_password_and_umask() {
   fi
 
   # Replace the login.conf file atomically
+  chmod 644 /etc/login.conf.tmp
   mv /etc/login.conf.tmp /etc/login.conf
-  chmod 644 /etc/login.conf
 
   # Rebuild login capabilities database
   if ! cap_mkdb /etc/login.conf; then
@@ -905,19 +908,22 @@ configure_password_and_umask() {
     return 1
   fi
 
-  # Inform the user about the password reset
-  echo "Resetting the password for $allowed_user and root to ensure Blowfish encryption is applied."
+  # Check if Blowfish hashing needs to be enabled
+  if [ "$blf_enabled" -ne 1 ]; then
+    # Inform the user about the password reset
+    echo "Resetting the password for $allowed_user and root to ensure Blowfish encryption is applied."
 
-  # Reset the password for the allowed user to apply Blowfish hashing
-  if ! passwd "$allowed_user"; then
-    echo "Error: Failed to reset password for $allowed_user."
-    return 1
-  fi
+    # Reset the password for the allowed user to apply Blowfish hashing
+    if ! passwd "$allowed_user"; then
+      echo "Error: Failed to reset password for $allowed_user."
+      return 1
+    fi
 
-  # Reset the password for the root user to apply Blowfish hashing
-  if ! passwd; then
-    echo "Error: Failed to reset password for root."
-    return 1
+    # Reset the password for the root user to apply Blowfish hashing
+    if ! passwd; then
+      echo "Error: Failed to reset password for root."
+      return 1
+    fi
   fi
 
   echo "Password security configured with umask 027 and Blowfish encryption for $allowed_user."
@@ -957,8 +963,8 @@ EOF
   fi
 
   # Create /etc/ipfw.rules with the necessary firewall rules
+  chmod 640 "$local_ipfw_rules"
   cp "$local_ipfw_rules" "$ipfw_rules"
-  chmod 640 "$ipfw_rules"
 
   # Set the firewall to load on boot and specify the rules file
   sysrc firewall_enable="YES"
@@ -989,7 +995,7 @@ configure_cron_updates() {
   freebsd_update_cmd="freebsd-update cron"
   pkg_update_cmd="pkg upgrade -y"
   suricata_cron="0 2 * * 0 $suricata_cmd 2>&1 | logger -t suricata-update -p cron.notice"
-  freebsd_update_cron="0 3 * * 0 $freebsd_update_cmd 2>&1 | logger -t freebsd-update -p cron.notice"
+  freebsd_update_cron="0 3 * * 0 PAGER=cat $freebsd_update_cmd 2>&1 | logger -t freebsd-update -p cron.notice"
   pkg_update_cron="0 4 * * 0 $pkg_update_cmd 2>&1 | logger -t pkg-upgrade -p cron.notice"
 
   # Temporary file to store updated crontab, specify /tmp directory explicitly
