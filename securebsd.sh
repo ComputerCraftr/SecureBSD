@@ -724,7 +724,7 @@ EOF
     # Use sysctl -d to check if the key exists
     if echo "$key" | grep -qF "net.inet.ip.fw." || sysctl -d "$key" >/dev/null 2>&1; then
       # If the current value is different from the desired value, update it
-      if ! grep -qE "^${setting}([ \t]+#|:|$)" "$sysctl_conf"; then
+      if ! grep -qE "^${setting}([ \t]+#|,|$)" "$sysctl_conf"; then
         if grep -q "^${key}=" "$sysctl_conf"; then
           sed -i '' "s|^${key}=.*|${setting}|" "$sysctl_conf"
         else
