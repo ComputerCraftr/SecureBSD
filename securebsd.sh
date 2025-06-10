@@ -256,7 +256,8 @@ configure_ssh() {
   sshd_config="/etc/ssh/sshd_config"
 
   # Define SSH settings as key-value pairs
-  settings="
+  settings=$(
+    cat <<EOF
 PermitRootLogin no
 MaxAuthTries 3
 PasswordAuthentication no
@@ -269,12 +270,16 @@ AllowUsers $allowed_user
 Port $admin_ssh_port
 ClientAliveInterval 60
 ClientAliveCountMax 1
-"
+EOF
+  )
 
   # Loop through each setting safely with line-by-line reading
   echo "$settings" | while IFS= read -r setting; do
     key=$(echo "$setting" | cut -d' ' -f1)
     value=$(echo "$setting" | cut -d' ' -f2-)
+    # Skip empty lines
+    [ -z "$key" ] && continue
+    [ -z "$value" ] && continue
 
     # Check if the setting exists (including commented ones)
     if grep -q "^#\?${key} " "$sshd_config"; then
