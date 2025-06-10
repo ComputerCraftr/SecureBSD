@@ -341,10 +341,10 @@ if [ -n "$wan_udp_ports" ] && [ "$wan_udp_ports" != "none" ]; then
     ${fwcmd} add 3710 allow ip4 from any to me "$wan_udp_ports" proto udp in limit src-addr 10
 fi
 if [ -n "$lan_tcp_ports" ] && [ "$lan_tcp_ports" != "none" ] && [ "$int_if_available" -eq 1 ]; then
-    ${fwcmd} add 3720 allow ip4 from any to me "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$int_if" limit src-addr 10
+    ${fwcmd} add 3720 allow ip4 from any to me "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$int_if" record-state
 fi
 if [ -n "$lan_udp_ports" ] && [ "$lan_udp_ports" != "none" ] && [ "$int_if_available" -eq 1 ]; then
-    ${fwcmd} add 3730 allow ip4 from any to me "$lan_udp_ports" proto udp in recv "$int_if" limit src-addr 10
+    ${fwcmd} add 3730 allow ip4 from any to me "$lan_udp_ports" proto udp in recv "$int_if" record-state
 fi
 
 # IPv6 SSH and user rules (if IPv6 is available)
@@ -361,10 +361,10 @@ if [ "$ipv6_available" -eq 1 ]; then
         ${fwcmd} add 3910 allow ip6 from any to me6 "$wan_udp_ports" proto udp in limit src-addr 10
     fi
     if [ -n "$lan_tcp_ports" ] && [ "$lan_tcp_ports" != "none" ] && [ "$int_if_available" -eq 1 ]; then
-        ${fwcmd} add 3920 allow ip6 from any to me6 "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$int_if" limit src-addr 10
+        ${fwcmd} add 3920 allow ip6 from any to me6 "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$int_if" record-state
     fi
     if [ -n "$lan_udp_ports" ] && [ "$lan_udp_ports" != "none" ] && [ "$int_if_available" -eq 1 ]; then
-        ${fwcmd} add 3930 allow ip6 from any to me6 "$lan_udp_ports" proto udp in recv "$int_if" limit src-addr 10
+        ${fwcmd} add 3930 allow ip6 from any to me6 "$lan_udp_ports" proto udp in recv "$int_if" record-state
     fi
 fi
 
