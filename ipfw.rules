@@ -60,6 +60,14 @@ ext_if_available=$([ -n "$ext_if" ] && [ "$ext_if" != "none" ] && ifconfig "$ext
 tun_if_available=$([ -n "$tun_if" ] && [ "$tun_if" != "none" ] && ifconfig "$tun_if" >/dev/null 2>&1 && echo 1 || echo 0)
 int_if_available=$([ -n "$int_if" ] && [ "$int_if" != "none" ] && ifconfig "$int_if" >/dev/null 2>&1 && echo 1 || echo 0)
 
+if [ "$tun_if_available" -eq 1 ]; then
+    ext_mtu=$(ifconfig "$tun_if" | awk '/mtu / { print $NF }')
+elif [ "$ext_if_available" -eq 1 ]; then
+    ext_mtu=$(ifconfig "$ext_if" | awk '/mtu / { print $NF }')
+else
+    ext_mtu=1500
+fi
+
 # Flush existing rules
 ${fwcmd} -q flush
 
@@ -88,8 +96,8 @@ ${fwcmd} add 200 deny log ip from 'table(fail2ban)' to any
 #################################
 # Fragmented Packet Handling
 #################################
-# Deny fragmented IPv4 packets
-${fwcmd} add 300 deny ip4 from any to any frag mf
+# Deny fragmented IPv4 packets and reply with current MTU
+${fwcmd} add 300 unreach needfrag "$ext_mtu" ip4 from any to any frag mf
 
 #################################
 # IPv6 Network Security
