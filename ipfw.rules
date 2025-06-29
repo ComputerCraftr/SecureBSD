@@ -103,9 +103,9 @@ fi
 # User Traffic Shaping
 #################################
 # Dummynet pipes to limit user bandwidth
-${fwcmd} pipe 1 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip 0xffffffff dst-ip 0xffffffff
+${fwcmd} pipe 1 config bw 1Mbit/s buckets 65536 type fifo mask src-ip 0xffffffff dst-ip 0xffffffff
 if [ "$ipv6_available" -eq 1 ]; then
-    ${fwcmd} pipe 2 config bw 1Mbit/s buckets 4096 queue 50 mask src-ip6 60 dst-ip6 60
+    ${fwcmd} pipe 2 config bw 1Mbit/s buckets 65536 type fifo mask src-ip6 60 dst-ip6 60
 fi
 
 # Limit user connection bandwidth
@@ -142,7 +142,7 @@ ${fwcmd} add 1000 check-state
 # ICMP Flood Protection
 #################################
 # Dummynet pipe to limit ICMPv4/ICMPv6 bandwidth
-${fwcmd} pipe 3 config bw 100Kbit/s queue 1 droptail
+${fwcmd} pipe 3 config bw 100Kbit/s type rr
 
 # Don't throttle the internal bridge interface (if available)
 if [ "$int_if_available" -eq 1 ]; then
