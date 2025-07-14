@@ -178,24 +178,24 @@ fi
 #################################
 # Deny traffic between the external interface and the internal interface
 if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_available" -eq 1 ]; then
-    ${fwcmd} add 1600 deny ip from any to any out recv "$int_if" xmit "$ext_if"
-    ${fwcmd} add 1610 deny ip from any to any out recv "$ext_if" xmit "$int_if"
+    ${fwcmd} add 1600 deny ip from any to any out recv "$int_if" not xmit "$tun_if"
+    ${fwcmd} add 1610 deny ip from any to any out recv not recv "$tun_if" xmit "$int_if"
 
     # Allow outbound traffic to the VPN endpoints/proxies
     if [ -n "${vpn_endpoints_ip4:-}" ] && [ "$vpn_endpoints_ip4" != "none" ]; then
-        ${fwcmd} add 1700 allow icmp from me to "$vpn_endpoints_ip4" icmptypes 8 out xmit "$ext_if" record-state
-        ${fwcmd} add 1710 allow icmp from me to "$vpn_endpoints_ip4" out xmit "$ext_if"
+        ${fwcmd} add 1700 allow icmp from me to "$vpn_endpoints_ip4" icmptypes 8 out record-state
+        ${fwcmd} add 1710 allow icmp from me to "$vpn_endpoints_ip4" out
         if [ -n "${vpn_tcp_port:-}" ] && [ "$vpn_tcp_port" != "none" ]; then
-            ${fwcmd} add 1720 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_tcp_port" tcpflags syn,!ack,!fin,!rst out xmit "$ext_if" record-state
+            ${fwcmd} add 1720 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_tcp_port" tcpflags syn,!ack,!fin,!rst out record-state
         fi
         if [ -n "${vpn_udp_port:-}" ] && [ "$vpn_udp_port" != "none" ]; then
-            ${fwcmd} add 1730 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_udp_port" proto udp out xmit "$ext_if" record-state
+            ${fwcmd} add 1730 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_udp_port" proto udp out record-state
         fi
     fi
 
     # Allow outbound traffic to the VPN setup DNS servers
     if [ -n "${vpn_dns_ip4:-}" ] && [ "$vpn_dns_ip4" != "none" ]; then
-        ${fwcmd} add 1800 allow ip4 from me to "$vpn_dns_ip4" 53 out xmit "$ext_if" record-state
+        ${fwcmd} add 1800 allow ip4 from me to "$vpn_dns_ip4" 53 out record-state
     fi
 fi
 
@@ -205,16 +205,16 @@ fi
 # Limit outbound traffic if the VPN is active
 if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_available" -eq 1 ]; then
     # Allow all ICMPv4 outbound
-    ${fwcmd} add 1900 allow icmp from any to any icmptypes 8 out not xmit "$ext_if" record-state
-    ${fwcmd} add 1910 allow icmp from any to any out not xmit "$ext_if"
+    ${fwcmd} add 1900 allow icmp from any to any icmptypes 8 out \{ xmit "$int_if" or xmit "$tun_if" \} record-state
+    ${fwcmd} add 1910 allow icmp from any to any out \{ xmit "$int_if" or xmit "$tun_if" \}
     if [ "$ipv6_available" -eq 1 ]; then
         # Allow all ICMPv6 outbound
-        ${fwcmd} add 2000 allow ipv6-icmp from any to any icmp6types 128 out not xmit "$ext_if" record-state
-        ${fwcmd} add 2010 allow ipv6-icmp from any to any out not xmit "$ext_if"
+        ${fwcmd} add 2000 allow ipv6-icmp from any to any icmp6types 128 out \{ xmit "$int_if" or xmit "$tun_if" \} record-state
+        ${fwcmd} add 2010 allow ipv6-icmp from any to any out \{ xmit "$int_if" or xmit "$tun_if" \}
     fi
 
     # Allow all outbound traffic with stateful handling
-    ${fwcmd} add 2100 allow ip from any to any out not xmit "$ext_if" record-state
+    ${fwcmd} add 2100 allow ip from any to any out \{ xmit "$int_if" or xmit "$tun_if" \} record-state
 else
     # Allow all ICMPv4 outbound
     ${fwcmd} add 1900 allow icmp from any to any icmptypes 8 out record-state
