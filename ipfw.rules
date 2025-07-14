@@ -7,7 +7,7 @@ set -eu
 fwcmd="/sbin/ipfw"
 
 # Define interfaces and ports
-ext_if=""            # Adjust as needed for your external interface
+nat_if=""            # Adjust as needed for your external interface
 tun_if=""            # Adjust as needed for your tunnel interface
 int_if=""            # Adjust as needed for your internal (bridge) interface
 vpn_endpoints_ip4="" # List of allowed VPN endpoints/proxies
@@ -56,20 +56,20 @@ multicast_ip6="ff00::/8"
 ipv6_available=$(ifconfig | grep -qwF "inet6" && echo 1 || echo 0)
 
 # Check if each interface is available
-ext_if_available=$([ -n "${ext_if:-}" ] && [ "$ext_if" != "none" ] && ifconfig "$ext_if" >/dev/null 2>&1 && echo 1 || echo 0)
+nat_if_available=$([ -n "${nat_if:-}" ] && [ "$nat_if" != "none" ] && ifconfig "$nat_if" >/dev/null 2>&1 && echo 1 || echo 0)
 tun_if_available=$([ -n "${tun_if:-}" ] && [ "$tun_if" != "none" ] && ifconfig "$tun_if" >/dev/null 2>&1 && echo 1 || echo 0)
+if [ "$nat_if_available" -eq 1 ] && [ "$tun_if_available" -ne 1 ]; then
+    tun_if="$nat_if"
+    tun_if_available="$nat_if_available"
+fi
 int_if_available=$([ -n "${int_if:-}" ] && [ "$int_if" != "none" ] && ifconfig "$int_if" >/dev/null 2>&1 && echo 1 || echo 0)
 
 # Flush existing rules
 ${fwcmd} -q flush
 
 # Define NAT instance
-if [ "$int_if_available" -eq 1 ]; then
-    if [ "$tun_if_available" -eq 1 ]; then
-        ${fwcmd} nat 1 config if "$tun_if" same_ports unreg_only reset
-    elif [ "$ext_if_available" -eq 1 ]; then
-        ${fwcmd} nat 1 config if "$ext_if" same_ports unreg_only reset
-    fi
+if [ "$int_if_available" -eq 1 ] && [ "$nat_if_available" -eq 1 ]; then
+    ${fwcmd} nat 1 config if "$nat_if" same_ports unreg_only reset
 fi
 
 #################################
@@ -104,12 +104,8 @@ fi
 # IPv4 NAT Traffic Handling
 #################################
 # NAT traffic from the tunnel/external interface to the internal interface
-if [ "$int_if_available" -eq 1 ]; then
-    if [ "$tun_if_available" -eq 1 ]; then
-        ${fwcmd} add 500 nat 1 ip4 from any to any via "$tun_if"
-    elif [ "$ext_if_available" -eq 1 ]; then
-        ${fwcmd} add 500 nat 1 ip4 from any to any via "$ext_if"
-    fi
+if [ "$int_if_available" -eq 1 ] && [ "$nat_if_available" -eq 1 ]; then
+    ${fwcmd} add 500 nat 1 ip4 from any to any via "$nat_if"
 fi
 
 #################################
@@ -177,9 +173,14 @@ fi
 # VPN LAN Leak Prevention
 #################################
 # Deny traffic between the external interface and the internal interface
-if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_available" -eq 1 ]; then
-    ${fwcmd} add 1600 deny ip from any to any out recv "$int_if" not xmit "$tun_if"
-    ${fwcmd} add 1610 deny ip from any to any out recv not recv "$tun_if" xmit "$int_if"
+if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ]; then
+    if [ "$nat_if_available" -eq 1 ]; then
+        ${fwcmd} add 1600 deny ip from any to any out recv "$int_if" not xmit "$tun_if" not xmit "$nat_if"
+        ${fwcmd} add 1610 deny ip from any to any out recv not recv "$tun_if" not recv "$nat_if" xmit "$int_if"
+    else
+        ${fwcmd} add 1600 deny ip from any to any out recv "$int_if" not xmit "$tun_if"
+        ${fwcmd} add 1610 deny ip from any to any out recv not recv "$tun_if" xmit "$int_if"
+    fi
 
     # Allow outbound traffic to the VPN endpoints/proxies
     if [ -n "${vpn_endpoints_ip4:-}" ] && [ "$vpn_endpoints_ip4" != "none" ]; then
@@ -203,7 +204,19 @@ fi
 # Outbound Traffic
 #################################
 # Limit outbound traffic if the VPN is active
-if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$ext_if_available" -eq 1 ]; then
+if [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ] && [ "$nat_if_available" -eq 1 ]; then
+    # Allow all ICMPv4 outbound
+    ${fwcmd} add 1900 allow icmp from any to any icmptypes 8 out \{ xmit "$int_if" or xmit "$tun_if" or xmit "$nat_if" \} record-state
+    ${fwcmd} add 1910 allow icmp from any to any out \{ xmit "$int_if" or xmit "$tun_if" or xmit "$nat_if" \}
+    if [ "$ipv6_available" -eq 1 ]; then
+        # Allow all ICMPv6 outbound
+        ${fwcmd} add 2000 allow ipv6-icmp from any to any icmp6types 128 out \{ xmit "$int_if" or xmit "$tun_if" or xmit "$nat_if" \} record-state
+        ${fwcmd} add 2010 allow ipv6-icmp from any to any out \{ xmit "$int_if" or xmit "$tun_if" or xmit "$nat_if" \}
+    fi
+
+    # Allow all outbound traffic with stateful handling
+    ${fwcmd} add 2100 allow ip from any to any out \{ xmit "$int_if" or xmit "$tun_if" or xmit "$nat_if" \} record-state
+elif [ "$int_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ]; then
     # Allow all ICMPv4 outbound
     ${fwcmd} add 1900 allow icmp from any to any icmptypes 8 out \{ xmit "$int_if" or xmit "$tun_if" \} record-state
     ${fwcmd} add 1910 allow icmp from any to any out \{ xmit "$int_if" or xmit "$tun_if" \}

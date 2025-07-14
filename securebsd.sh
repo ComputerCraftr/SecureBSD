@@ -113,33 +113,33 @@ collect_user_input() {
     return 1
   fi
 
-  # External network interface input (for IPFW and optionally Suricata)
-  echo "Set the external network interface for IPFW (and Suricata, if installed). Type 'none' if not applicable (default: none)."
-  printf "Enter the external network interface (e.g., em0, re0): "
-  read -r external_interface
-  external_interface="${external_interface:-none}"
-  if [ "$external_interface" != "none" ]; then
-    validate_interface "$external_interface"
-  else
-    install_suricata="no"
-  fi
-
-  # VPN tunnel network interface input (for IPFW)
-  echo "Set the VPN tunnel network interface for IPFW. Type 'none' if not using a VPN (default: none)."
-  printf "Enter the VPN tunnel network interface (e.g., tun0): "
-  read -r tunnel_interface
-  tunnel_interface="${tunnel_interface:-none}"
-  if [ "$tunnel_interface" != "none" ]; then
-    validate_interface "$tunnel_interface"
-  fi
-
-  # Internal network interface input (for IPFW filtering bridge)
+  # Internal network interface input (for IPFW filtering bridge and optionally Suricata netmap)
   echo "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)."
   printf "Enter the internal network interface (e.g., bridge0): "
   read -r internal_interface
   internal_interface="${internal_interface:-none}"
   if [ "$internal_interface" != "none" ]; then
     validate_interface "$internal_interface"
+  else
+    install_suricata="no"
+  fi
+
+  # NAT tunnel network interface input (for IPFW)
+  echo "Set the NAT/IPv4 VPN tunnel network interface for IPFW. Type 'none' if not using NAT (default: none)."
+  printf "Enter the NAT/IPv4 VPN tunnel network interface (e.g., tun0): "
+  read -r nat_interface
+  nat_interface="${nat_interface:-none}"
+  if [ "$nat_interface" != "none" ]; then
+    validate_interface "$nat_interface"
+  fi
+
+  # VPN tunnel network interface input (for IPFW)
+  echo "Set the IPv6 VPN tunnel network interface for IPFW. Type 'none' if not using a VPN (default: none)."
+  printf "Enter the IPv6 VPN tunnel network interface (e.g., tun0, gif0): "
+  read -r tunnel_interface
+  tunnel_interface="${tunnel_interface:-none}"
+  if [ "$tunnel_interface" != "none" ]; then
+    validate_interface "$tunnel_interface"
   fi
 
   echo "Do you want to install security auditing tools? (yes/no)"
@@ -584,7 +584,7 @@ configure_suricata() {
 ---
 # Configure Suricata for inline packet processing via IPFW (IPS mode)
 ipfw:
-  - interface: $external_interface
+  - interface: $internal_interface
     divert-port: $suricata_port
     threads: auto
     checksum-checks: no
@@ -641,7 +641,7 @@ EOF
 
   # Enable Suricata at boot
   sysrc suricata_enable="YES"
-  echo "Suricata configured to enable at next reboot on interface $external_interface."
+  echo "Suricata configured to enable at next reboot on interface $internal_interface."
 }
 
 # Configure Fail2Ban to protect SSH
@@ -943,7 +943,7 @@ configure_ipfw() {
   # Define the ipfw.rules values to be set
   settings=$(
     cat <<EOF
-ext_if="$external_interface"
+nat_if="$nat_interface"
 tun_if="$tunnel_interface"
 int_if="$internal_interface"
 ssh_ip4="$admin_ipv4"
