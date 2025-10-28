@@ -756,6 +756,7 @@ mac_bsdextended_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
 ipfw_load="YES"
+ipfw_nat_load="YES"
 dummynet_load="YES"
 EOF
   )
@@ -824,7 +825,7 @@ EOF
         # Attempt to load the kernel module
         if kldstat -q -m "$module"; then
           echo "Module '${module}' already loaded."
-        elif [ "$module" != "ipfw" ]; then
+        elif [ "$module" != "ipfw" ] && [ "$module" != "ipfw_nat" ]; then
           if kldload "$module" 2>/dev/null; then
             echo "Module '${module}' successfully loaded."
           else
