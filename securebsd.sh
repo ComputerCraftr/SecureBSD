@@ -204,16 +204,16 @@ backup_configs() {
     echo "Backup completed and made immutable. Files saved in $backup_dir."
 }
 
-# Update FreeBSD and install necessary packages (sudo, fail2ban, Suricata, Google Authenticator)
+# Update FreeBSD and install necessary packages (sudo-rs, fail2ban, Suricata, Google Authenticator)
 update_and_install_packages() {
-    echo "Updating FreeBSD and installing necessary packages (sudo, fail2ban, Google Authenticator)..."
+    echo "Updating FreeBSD and installing necessary packages (sudo-rs, fail2ban, Google Authenticator)..."
     # FreeBSD update is not supported on all architectures
     freebsd_update_supported="no"
     if freebsd-update fetch install; then
         freebsd_update_supported="yes"
     fi
     pkg upgrade -y
-    pkg install -y sudo anacron pam_google_authenticator py311-fail2ban
+    pkg install -y sudo-rs anacron pam_google_authenticator py311-fail2ban
 
     # Install security auditing tools if the user opted in
     if [ "$install_auditing_tools" = "yes" ]; then
