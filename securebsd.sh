@@ -17,6 +17,21 @@ audit_log_files="/var/audit"
 other_sensitive_files="/etc/ftpusers"
 sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files $other_sensitive_files"
 
+# Initialize user-configurable variables (can be set via flags or prompts)
+allowed_user=""
+admin_ssh_port=""
+admin_ipv4=""
+admin_ipv6=""
+internal_interface=""
+nat_interface=""
+tunnel_interface=""
+install_auditing_tools=""
+install_microcode=""
+install_suricata=""
+suricata_port=""
+password_expiration=""
+cpu_type="unknown"
+
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
     echo "This script must be run as root. Please use sudo or run as root user."
@@ -55,6 +70,150 @@ validate_password_expiration() {
     fi
 }
 
+usage() {
+    cat <<EOF
+Usage: $0 [options]
+
+All options are optional; missing values will be prompted interactively.
+
+  -u, --user USER                 Username to allow for SSH/sudo
+  -p, --ssh-port PORT             SSH port (default: 2222)
+      --ssh-ipv4 LIST             Comma-separated IPv4 list or 'any'
+      --ssh-ipv6 LIST             Comma-separated IPv6 list or 'any'
+      --internal-if IFACE         Internal interface (bridge), or 'none'
+      --nat-if IFACE              NAT/VPN IPv4 interface, or 'none'
+      --tunnel-if IFACE           VPN IPv6 tunnel interface, or 'none'
+      --install-auditing yes|no   Install auditing tools (default: yes)
+      --install-microcode yes|no  Install CPU microcode (default: yes)
+      --install-suricata yes|no   Install Suricata IPS (default: no)
+      --suricata-port PORT        Suricata divert port (default: 8000)
+      --password-exp DAYS|none    Password expiration in days (default: 120)
+  -h, --help                      Show this help and exit
+
+Examples:
+  $0 --user alice --ssh-port 2222 --ssh-ipv4 203.0.113.10,198.51.100.5 --nat-if tun0 --internal-if bridge0
+EOF
+    exit 1
+}
+
+parse_arguments() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        -u | --user)
+            [ $# -ge 2 ] || usage
+            allowed_user="$2"
+            shift 2
+            ;;
+        -p | --ssh-port)
+            [ $# -ge 2 ] || usage
+            admin_ssh_port="$2"
+            shift 2
+            ;;
+        --ssh-ipv4)
+            [ $# -ge 2 ] || usage
+            admin_ipv4="$2"
+            shift 2
+            ;;
+        --ssh-ipv6)
+            [ $# -ge 2 ] || usage
+            admin_ipv6="$2"
+            shift 2
+            ;;
+        --internal-if)
+            [ $# -ge 2 ] || usage
+            internal_interface="$2"
+            shift 2
+            ;;
+        --nat-if)
+            [ $# -ge 2 ] || usage
+            nat_interface="$2"
+            shift 2
+            ;;
+        --tunnel-if)
+            [ $# -ge 2 ] || usage
+            tunnel_interface="$2"
+            shift 2
+            ;;
+        --install-auditing)
+            [ $# -ge 2 ] || usage
+            install_auditing_tools="$2"
+            shift 2
+            ;;
+        --install-microcode)
+            [ $# -ge 2 ] || usage
+            install_microcode="$2"
+            shift 2
+            ;;
+        --install-suricata)
+            [ $# -ge 2 ] || usage
+            install_suricata="$2"
+            shift 2
+            ;;
+        --suricata-port)
+            [ $# -ge 2 ] || usage
+            suricata_port="$2"
+            shift 2
+            ;;
+        --password-exp)
+            [ $# -ge 2 ] || usage
+            password_expiration="$2"
+            shift 2
+            ;;
+        -h | --help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+        esac
+    done
+
+    # Validate arguments provided via flags
+    if [ -n "$allowed_user" ]; then
+        validate_user "$allowed_user"
+    fi
+    if [ -n "$admin_ssh_port" ]; then
+        validate_port "$admin_ssh_port"
+    fi
+    if [ -n "$admin_ipv4" ] && ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
+        echo "Invalid IPv4 list '$admin_ipv4'. Use comma-separated IPv4 addresses or 'any'."
+        exit 1
+    fi
+    if [ -n "$admin_ipv6" ] && ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
+        echo "Invalid IPv6 list '$admin_ipv6'. Use comma-separated IPv6 addresses or 'any'."
+        exit 1
+    fi
+    if [ -n "$internal_interface" ] && [ "$internal_interface" != "none" ]; then
+        validate_interface "$internal_interface"
+    fi
+    if [ -n "$nat_interface" ] && [ "$nat_interface" != "none" ]; then
+        validate_interface "$nat_interface"
+    fi
+    if [ -n "$tunnel_interface" ] && [ "$tunnel_interface" != "none" ]; then
+        validate_interface "$tunnel_interface"
+    fi
+    if [ -n "$install_auditing_tools" ] && [ "$install_auditing_tools" != "yes" ] && [ "$install_auditing_tools" != "no" ]; then
+        echo "Invalid value for --install-auditing: $install_auditing_tools (use yes or no)."
+        exit 1
+    fi
+    if [ -n "$install_microcode" ] && [ "$install_microcode" != "yes" ] && [ "$install_microcode" != "no" ]; then
+        echo "Invalid value for --install-microcode: $install_microcode (use yes or no)."
+        exit 1
+    fi
+    if [ -n "$install_suricata" ] && [ "$install_suricata" != "yes" ] && [ "$install_suricata" != "no" ]; then
+        echo "Invalid value for --install-suricata: $install_suricata (use yes or no)."
+        exit 1
+    fi
+    if [ -n "$suricata_port" ]; then
+        validate_port "$suricata_port"
+    fi
+    if [ -n "$password_expiration" ] && [ "$password_expiration" != "none" ]; then
+        validate_password_expiration "$password_expiration"
+        password_expiration="${password_expiration}d"
+    fi
+}
+
 # Clear immutable flags on system files for updates
 clear_immutable_flags() {
     echo "Clearing immutable flags on system files for updates..."
@@ -80,77 +239,112 @@ collect_user_input() {
     echo "This script will harden your FreeBSD system by securing SSH, enabling firewall rules, configuring automatic updates, and more."
 
     # SSH allowed user input
-    echo "Enter a valid username for SSH access and sudo privileges."
-    printf "Enter the username to allow for SSH access: "
-    read -r allowed_user
-    if ! validate_user "$allowed_user"; then
-        echo "Please provide a valid username."
-        return 1
+    if [ -z "$allowed_user" ]; then
+        echo "Enter a valid username for SSH access and sudo privileges."
+        printf "Enter the username to allow for SSH access: "
+        read -r allowed_user
+        if ! validate_user "$allowed_user"; then
+            echo "Please provide a valid username."
+            return 1
+        fi
+    else
+        echo "Using provided username: $allowed_user"
     fi
 
     # SSH port input
-    echo "Choose a custom SSH port (not the default 22)."
-    printf "Enter the SSH port to use (default: 2222): "
-    read -r admin_ssh_port
-    admin_ssh_port="${admin_ssh_port:-2222}"
-    validate_port "$admin_ssh_port"
+    if [ -z "$admin_ssh_port" ]; then
+        echo "Choose a custom SSH port (not the default 22)."
+        printf "Enter the SSH port to use (default: 2222): "
+        read -r admin_ssh_port
+        admin_ssh_port="${admin_ssh_port:-2222}"
+        validate_port "$admin_ssh_port"
+    else
+        echo "Using provided SSH port: $admin_ssh_port"
+    fi
 
     # Admin IPv4 input
-    echo "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
-    printf "Enter the admin IPv4 addresses (comma-separated) for SSH access: "
-    read -r admin_ipv4
-    if ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
-        echo "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
-        return 1
+    if [ -z "$admin_ipv4" ]; then
+        echo "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
+        printf "Enter the admin IPv4 addresses (comma-separated) for SSH access: "
+        read -r admin_ipv4
+        if ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
+            echo "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
+            return 1
+        fi
+    else
+        echo "Using provided SSH IPv4 list: $admin_ipv4"
     fi
 
     # Admin IPv6 input
-    echo "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
-    printf "Enter the admin IPv6 addresses (comma-separated) for SSH access: "
-    read -r admin_ipv6
-    if ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
-        echo "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
-        return 1
+    if [ -z "$admin_ipv6" ]; then
+        echo "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
+        printf "Enter the admin IPv6 addresses (comma-separated) for SSH access: "
+        read -r admin_ipv6
+        if ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
+            echo "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
+            return 1
+        fi
+    else
+        echo "Using provided SSH IPv6 list: $admin_ipv6"
     fi
 
     # Internal network interface input (for IPFW filtering bridge and optionally Suricata netmap)
-    echo "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)."
-    printf "Enter the internal network interface (e.g., bridge0): "
-    read -r internal_interface
-    internal_interface="${internal_interface:-none}"
-    if [ "$internal_interface" != "none" ]; then
-        validate_interface "$internal_interface"
+    if [ -z "$internal_interface" ]; then
+        echo "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)."
+        printf "Enter the internal network interface (e.g., bridge0): "
+        read -r internal_interface
+        internal_interface="${internal_interface:-none}"
+        if [ "$internal_interface" != "none" ]; then
+            validate_interface "$internal_interface"
+        else
+            install_suricata="no"
+        fi
     else
-        install_suricata="no"
+        echo "Using provided internal interface: $internal_interface"
+        if [ "$internal_interface" != "none" ]; then
+            validate_interface "$internal_interface"
+        fi
     fi
 
     # NAT tunnel network interface input (for IPFW)
-    echo "Set the NAT/IPv4 VPN tunnel network interface for IPFW. Type 'none' if not using NAT (default: none)."
-    printf "Enter the NAT/IPv4 VPN tunnel network interface (e.g., tun0): "
-    read -r nat_interface
-    nat_interface="${nat_interface:-none}"
-    if [ "$nat_interface" != "none" ]; then
-        validate_interface "$nat_interface"
+    if [ -z "$nat_interface" ]; then
+        echo "Set the NAT/IPv4 VPN tunnel network interface for IPFW. Type 'none' if not using NAT (default: none)."
+        printf "Enter the NAT/IPv4 VPN tunnel network interface (e.g., tun0): "
+        read -r nat_interface
+        nat_interface="${nat_interface:-none}"
+        if [ "$nat_interface" != "none" ]; then
+            validate_interface "$nat_interface"
+        fi
+    else
+        echo "Using provided NAT interface: $nat_interface"
     fi
 
     # VPN tunnel network interface input (for IPFW)
-    echo "Set the IPv6 VPN tunnel network interface for IPFW. Type 'none' if not using a VPN (default: none)."
-    printf "Enter the IPv6 VPN tunnel network interface (e.g., tun0, gif0): "
-    read -r tunnel_interface
-    tunnel_interface="${tunnel_interface:-none}"
-    if [ "$tunnel_interface" != "none" ]; then
-        validate_interface "$tunnel_interface"
+    if [ -z "$tunnel_interface" ]; then
+        echo "Set the IPv6 VPN tunnel network interface for IPFW. Type 'none' if not using a VPN (default: none)."
+        printf "Enter the IPv6 VPN tunnel network interface (e.g., tun0, gif0): "
+        read -r tunnel_interface
+        tunnel_interface="${tunnel_interface:-none}"
+        if [ "$tunnel_interface" != "none" ]; then
+            validate_interface "$tunnel_interface"
+        fi
+    else
+        echo "Using provided tunnel interface: $tunnel_interface"
     fi
 
-    echo "Do you want to install security auditing tools? (yes/no)"
-    printf "Enter your choice (default: yes): "
-    read -r install_auditing_tools
-    install_auditing_tools="${install_auditing_tools:-yes}"
+    if [ -z "$install_auditing_tools" ]; then
+        echo "Do you want to install security auditing tools? (yes/no)"
+        printf "Enter your choice (default: yes): "
+        read -r install_auditing_tools
+        install_auditing_tools="${install_auditing_tools:-yes}"
+    fi
 
-    echo "Would you like to install CPU microcode for your processor to enhance security? (yes/no)"
-    printf "Enter your choice (default: yes): "
-    read -r install_microcode
-    install_microcode="${install_microcode:-yes}"
+    if [ -z "$install_microcode" ]; then
+        echo "Would you like to install CPU microcode for your processor to enhance security? (yes/no)"
+        printf "Enter your choice (default: yes): "
+        read -r install_microcode
+        install_microcode="${install_microcode:-yes}"
+    fi
     if [ "$install_microcode" = "yes" ]; then
         cpu_info=$(sysctl -n hw.model | tr '[:upper:]' '[:lower:]')
         if echo "$cpu_info" | grep -qF "intel"; then
@@ -163,30 +357,35 @@ collect_user_input() {
     fi
 
     # Suricata installation choice
-    #echo "Do you want to install and configure Suricata? (yes/no)"
-    #printf "Enter your choice (default: yes): "
-    #read -r install_suricata
-    install_suricata="no"
-    install_suricata="${install_suricata:-yes}"
+    if [ -z "$install_suricata" ]; then
+        echo "Do you want to install and configure Suricata? (yes/no)"
+        printf "Enter your choice (default: no): "
+        read -r install_suricata
+        install_suricata="${install_suricata:-no}"
+    fi
+    if [ "$install_suricata" != "yes" ] && [ "$install_suricata" != "no" ]; then
+        echo "Invalid input. Please enter 'yes' or 'no'."
+        return 1
+    fi
     if [ "$install_suricata" != "no" ]; then
-        if [ "$install_suricata" != "yes" ]; then
-            echo "Invalid input. Please enter 'yes' or 'no'."
-            return 1
+        if [ -z "$suricata_port" ]; then
+            suricata_port="${suricata_port:-8000}" # Define the divert port for IPFW to Suricata
         fi
-        suricata_port="${suricata_port:-8000}" # Define the divert port for IPFW to Suricata
         validate_port "$suricata_port"
     else
         suricata_port="none"
     fi
 
     # Password expiration input
-    echo "Set the password expiration period in days. Type 'none' to disable expiration (not recommended)."
-    printf "Enter the password expiration period in days (default: 120): "
-    read -r password_expiration
-    password_expiration="${password_expiration:-120}"
-    if [ "$password_expiration" != "none" ]; then
-        validate_password_expiration "$password_expiration"
-        password_expiration="${password_expiration}d"
+    if [ -z "$password_expiration" ]; then
+        echo "Set the password expiration period in days. Type 'none' to disable expiration (not recommended)."
+        printf "Enter the password expiration period in days (default: 120): "
+        read -r password_expiration
+        password_expiration="${password_expiration:-120}"
+        if [ "$password_expiration" != "none" ]; then
+            validate_password_expiration "$password_expiration"
+            password_expiration="${password_expiration}d"
+        fi
     fi
 }
 
@@ -1067,6 +1266,7 @@ lock_down_system() {
 
 # Main function to run all steps
 main() {
+    parse_arguments "$@"
     collect_user_input
     clear_immutable_flags
     backup_configs
@@ -1091,4 +1291,4 @@ main() {
 }
 
 # Run the main function
-main
+main "$@"
