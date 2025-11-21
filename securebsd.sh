@@ -756,10 +756,19 @@ mac_bsdextended_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
 ipfw_load="YES"
-ipfw_nat_load="YES"
 dummynet_load="YES"
 EOF
     )
+
+    # Load ipfw_nat when a NAT interface is configured for the firewall ruleset
+    if [ "$nat_interface" != "none" ]; then
+        settings=$(
+            cat <<EOF
+$settings
+ipfw_nat_load="YES"
+EOF
+        )
+    fi
 
     # Add CPU microcode settings to loader.conf if detected
     if [ "$cpu_type" != "unknown" ]; then
