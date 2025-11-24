@@ -18,6 +18,7 @@ vpn_dns_ip4="\
 149.112.112.112,\
 1.1.1.2,\
 1.0.0.2"                        # List of allowed VPN setup DNS servers
+suricata_divert_port=""         # Suricata divert port for inline IPS (set when Suricata is enabled)
 ssh_ip4=""                      # List of allowed SSH source IPv4 addresses
 ssh_ip6=""                      # List of allowed SSH source IPv6 addresses
 ssh_tcp_port=""                 # SSH TCP port to allow
@@ -126,10 +127,18 @@ if [ "$int_if_available" -eq 1 ] && [ "$nat_if_available" -eq 1 ]; then
 fi
 
 #################################
+# Suricata Traffic Diversion
+#################################
+# Divert inbound traffic on the NAT interface to Suricata for inline IPS processing
+if [ "$nat_if_available" -eq 1 ] && [ -n "${suricata_divert_port:-}" ] && [ "$suricata_divert_port" != "none" ]; then
+    ${fwcmd} add 900 divert "$suricata_divert_port" ip from any to any not proto icmp not proto ipv6-icmp in recv "$nat_if"
+fi
+
+#################################
 # Stateful Traffic Handling
 #################################
 # Check the state of all connections to allow established connections
-${fwcmd} add 900 check-state
+${fwcmd} add 990 check-state
 
 #################################
 # ICMP Flood Protection

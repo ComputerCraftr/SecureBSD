@@ -783,7 +783,7 @@ configure_suricata() {
 ---
 # Configure Suricata for inline packet processing via IPFW (IPS mode)
 ipfw:
-  - interface: $internal_interface
+  - interface: $nat_interface
     divert-port: $suricata_port
     threads: auto
     checksum-checks: no
@@ -840,7 +840,7 @@ EOF
 
     # Enable Suricata at boot
     sysrc suricata_enable="YES"
-    echo "Suricata configured to enable at next reboot on interface $internal_interface."
+    echo "Suricata configured to enable at next reboot on interface $nat_interface."
 }
 
 # Configure Fail2Ban to protect SSH
@@ -965,6 +965,16 @@ EOF
             cat <<EOF
 $settings
 ipfw_nat_load="YES"
+EOF
+        )
+    fi
+
+    # Load ipdivert when Suricata divert processing is enabled
+    if [ "$install_suricata" = "yes" ] && [ "$suricata_port" != "none" ]; then
+        settings=$(
+            cat <<EOF
+$settings
+ipdivert_load="YES"
 EOF
         )
     fi
@@ -1155,6 +1165,7 @@ configure_ipfw() {
 nat_if="$nat_interface"
 tun_if="$tunnel_interface"
 int_if="$internal_interface"
+suricata_divert_port="$suricata_port"
 ssh_ip4="$admin_ipv4"
 ssh_ip6="$admin_ipv6"
 ssh_tcp_port="$admin_ssh_port"
