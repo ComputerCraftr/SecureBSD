@@ -14,8 +14,7 @@ full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /
 password_related_files="/etc/master.passwd"
 service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
 audit_log_files="/var/audit"
-other_sensitive_files="/etc/ftpusers"
-sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files $other_sensitive_files"
+sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files"
 
 # Initialize user-configurable variables (can be set via flags or prompts)
 allowed_user=""
