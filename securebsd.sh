@@ -1074,6 +1074,59 @@ configure_securelevel() {
     echo "Securelevel configured in rc.conf."
 }
 
+harden_ttys() {
+    echo "Hardening /etc/ttys for console password requirement and disabling extra VTs..."
+    ttys_conf="/etc/ttys"
+    tmp_ttys="/etc/ttys.tmp"
+
+    if [ ! -f "$ttys_conf" ]; then
+        echo "Warning: $ttys_conf not found; skipping."
+        return 0
+    fi
+
+    awk '
+    BEGIN {
+        OFS="\t";
+        # Preserve quoted fields (e.g., getty command with spaces)
+        FPAT="([^[:space:]]+)|(\"[^\"]+\")";
+    }
+    function print_with_rest(n, g, t, s, c, line, i) {
+        line = n OFS g OFS t OFS s OFS c;
+        for (i = 6; i <= NF; i++) {
+            line = line OFS $i;
+        }
+        print line;
+    }
+    /^[[:space:]]*#/ || NF==0 { print; next }
+    $1=="console" {
+        print_with_rest("console", "none", "unknown", "off", "insecure");
+        next
+    }
+    $1 ~ /^ttyv[0-1]$/ {
+        # Keep only ttyv0 and ttyv1 enabled
+        print_with_rest($1, ($2 ? $2 : "\"/usr/libexec/getty Pc\""), ($3 ? $3 : "xterm"), "onifexists", "secure");
+        next
+    }
+    $1 ~ /^ttyv[0-9]+$/ {
+        # Disable all other VTs (covers ttyv2 through any higher number)
+        print_with_rest($1, ($2 ? $2 : "\"/usr/libexec/getty Pc\""), ($3 ? $3 : "xterm"), "off", "secure");
+        next
+    }
+    { print }
+    ' "$ttys_conf" | tee "$tmp_ttys" >/dev/null
+
+    # Abort if awk produces an empty file
+    if [ ! -s "$tmp_ttys" ]; then
+        echo "Error: Processing $ttys_conf failed."
+        rm "$tmp_ttys"
+        return 1
+    fi
+
+    chmod 644 "$tmp_ttys"
+    mv "$tmp_ttys" "$ttys_conf"
+    echo "Hardened /etc/ttys and disabled VTs."
+}
+
 # Set Blowfish password hashing, enforce password expiration, and configure umask
 configure_password_and_umask() {
     echo "Configuring password security with Blowfish encryption and setting a secure umask..."
@@ -1294,6 +1347,7 @@ main() {
     secure_syslog_and_tmp
     configure_cron_updates
     configure_securelevel
+    harden_ttys
     harden_loader_conf
     harden_sysctl
     lock_down_system
