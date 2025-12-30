@@ -69,6 +69,55 @@ validate_password_expiration() {
     fi
 }
 
+make_secure_tmp() {
+    tmp_dir="${1:-/var/tmp}"
+    old_umask=$(umask)
+    umask 077
+    tmp_file=$(mktemp "$tmp_dir/securebsd.XXXXXX")
+    umask "$old_umask"
+    echo "$tmp_file"
+}
+
+atomic_replace() {
+    target="$1"
+    tmp_file="$2"
+    orig_mode=""
+    orig_owner=""
+    orig_group=""
+
+    if [ -e "$target" ]; then
+        orig_mode=$(stat -f %Lp "$target" 2>/dev/null || echo "")
+        orig_owner=$(stat -f %u "$target" 2>/dev/null || echo "")
+        orig_group=$(stat -f %g "$target" 2>/dev/null || echo "")
+    fi
+
+    mv "$tmp_file" "$target"
+
+    if [ -n "$orig_mode" ]; then
+        chmod "$orig_mode" "$target"
+    fi
+    if [ -n "$orig_owner" ] && [ -n "$orig_group" ]; then
+        chown "$orig_owner:$orig_group" "$target"
+    fi
+}
+
+atomic_sed_replace() {
+    target="$1"
+    shift
+    tmp_file=$(make_secure_tmp "$(dirname "$target")")
+    if ! sed "$@" "$target" >"$tmp_file"; then
+        echo "Error: Failed to update $target."
+        rm -f "$tmp_file"
+        return 1
+    fi
+    if [ ! -s "$tmp_file" ]; then
+        echo "Error: Processing $target failed."
+        rm -f "$tmp_file"
+        return 1
+    fi
+    atomic_replace "$target" "$tmp_file"
+}
+
 usage() {
     cat <<EOF
 Usage: $0 [options]
@@ -484,15 +533,15 @@ EOF
             if [ "$key" = "AllowUsers" ]; then
                 # Ensure we only add user if not already in the list
                 if ! grep -qE "^${key}\b.*\b${value}\b" "$sshd_config"; then
-                    sed -i '' -E "s|^#?${key} (.*)|${setting} \1|" "$sshd_config"
+                    atomic_sed_replace "$sshd_config" -E "s|^#?${key} (.*)|${setting} \1|"
                 fi
             else
                 # Replace existing setting
-                sed -i '' -E "s|^#?${key} .*|${setting}|" "$sshd_config"
+                atomic_sed_replace "$sshd_config" -E "s|^#?${key} .*|${setting}|"
             fi
         else
             # Add the setting if it doesn't exist
-            echo "$setting" | tee -a "$sshd_config" >/dev/null
+            echo "$setting" >>"$sshd_config"
         fi
     done
 
@@ -526,7 +575,7 @@ EOF
     if [ ! -f "$authorized_keys" ]; then
         echo "Creating authorized_keys for $allowed_user..."
         if [ -f "$ssh_pub_key" ]; then
-            tee "$authorized_keys" <"$ssh_pub_key" >/dev/null
+            cat "$ssh_pub_key" >"$authorized_keys"
         else
             echo "Public key not found. Ensure a key pair exists before running this script."
             return 1
@@ -537,7 +586,7 @@ EOF
         key_type_and_value=$(awk '{print $1, $2}' "$ssh_pub_key")
         if ! grep -qF "$key_type_and_value" "$authorized_keys"; then
             echo "Adding missing public key to authorized_keys."
-            tee -a "$authorized_keys" <"$ssh_pub_key" >/dev/null
+            cat "$ssh_pub_key" >>"$authorized_keys"
         else
             echo "Public key already exists in authorized_keys."
         fi
@@ -589,6 +638,7 @@ configure_ssh_pam() {
         echo "Google Authenticator is already enabled in PAM SSH configuration."
         return
     fi
+    pam_sshd_tmp=$(make_secure_tmp "$(dirname "$pam_sshd_config")")
 
     # Replace pam_unix.so or insert pam_google_authenticator.so at the correct position
     awk -v ga_line="$ga_pam_line" '
@@ -620,18 +670,17 @@ configure_ssh_pam() {
     END {
       if (!inserted) print ga_line;
     }
-  ' "$pam_sshd_config" | tee "$pam_sshd_config.tmp" >/dev/null
+  ' "$pam_sshd_config" >"$pam_sshd_tmp"
 
     # Abort if awk produces an empty file
-    if [ ! -s "$pam_sshd_config.tmp" ]; then
+    if [ ! -s "$pam_sshd_tmp" ]; then
         echo "Error: Processing $pam_sshd_config failed."
-        rm "$pam_sshd_config.tmp"
+        rm "$pam_sshd_tmp"
         return 1
     fi
 
     # Replace the sshd config file atomically
-    chmod 644 "$pam_sshd_config.tmp"
-    mv "$pam_sshd_config.tmp" "$pam_sshd_config"
+    atomic_replace "$pam_sshd_config" "$pam_sshd_tmp"
 
     echo "Google Authenticator added to the auth section of PAM SSH configuration."
 }
@@ -707,7 +756,7 @@ configure_sudo() {
 
     # Configure sudoers file for the sudo group
     if [ ! -f /usr/local/etc/sudoers.d/sudo ]; then
-        echo '%sudo ALL=(ALL:ALL) ALL' | tee /usr/local/etc/sudoers.d/sudo >/dev/null
+        echo '%sudo ALL=(ALL:ALL) ALL' >/usr/local/etc/sudoers.d/sudo
         chmod 440 /usr/local/etc/sudoers.d/sudo
     fi
 
@@ -724,7 +773,7 @@ configure_sudo() {
         WHEEL_REGEX='^%wheel[[:blank:]]+ALL=\(ALL(:ALL)?\)[[:blank:]]+(NOPASSWD:[[:blank:]]+)?ALL'
 
         if grep -qE "$WHEEL_REGEX" /usr/local/etc/sudoers; then
-            sed -i '' -E "s/${WHEEL_REGEX}/# &/" /usr/local/etc/sudoers
+            atomic_sed_replace /usr/local/etc/sudoers -E "s/${WHEEL_REGEX}/# &/"
             echo "Commented out %wheel group sudo access in /usr/local/etc/sudoers."
         fi
 
@@ -777,7 +826,7 @@ configure_suricata() {
     suricata_rules="/var/lib/suricata/rules/custom.rules"
 
     # Create or update the Suricata custom configuration file
-    cat <<EOF | tee "$suricata_custom_conf" >/dev/null
+    cat <<EOF >"$suricata_custom_conf"
 %YAML 1.1
 ---
 # Configure Suricata for inline packet processing via IPFW (IPS mode)
@@ -813,11 +862,11 @@ outputs:
 EOF
 
     # Update SSH port in suricata.yaml using sed to match single values or lists
-    sed -i '' -E "s/(SSH_PORTS: )([0-9]+|\[[0-9, ]+\])/\1$admin_ssh_port/" "$suricata_conf"
+    atomic_sed_replace "$suricata_conf" -E "s/(SSH_PORTS: )([0-9]+|\\[[0-9, ]+\\])/\1$admin_ssh_port/"
 
     # Append the custom configuration to the existing suricata.yaml using the `include` directive
     if ! grep -q "^include: $suricata_custom_conf" "$suricata_conf"; then
-        echo "include: $suricata_custom_conf" | tee -a "$suricata_conf" >/dev/null
+        echo "include: $suricata_custom_conf" >>"$suricata_conf"
         echo "Custom Suricata configuration included."
     else
         echo "Custom Suricata configuration is already included."
@@ -825,7 +874,7 @@ EOF
 
     # Add custom Suricata rule for SSH port if not present
     if ! grep -qF "port $admin_ssh_port" "$suricata_rules"; then
-        echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" | tee -a "$suricata_rules" >/dev/null
+        echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
         echo "Custom SSH port rule added to Suricata."
     else
         echo "Custom SSH port rule already exists in Suricata."
@@ -848,7 +897,7 @@ configure_fail2ban() {
 
     # Configure Fail2Ban jail
     echo "Creating Fail2Ban jail.local for SSH and manual bans..."
-    cat <<EOF | tee /usr/local/etc/fail2ban/jail.local >/dev/null
+    cat <<EOF >/usr/local/etc/fail2ban/jail.local
 [sshd]
 enabled = true
 filter = sshd
@@ -929,9 +978,9 @@ EOF
             # If the current value is different from the desired value, update it
             if ! grep -qE "^${setting}([ \t]+#|,|$)" "$sysctl_conf"; then
                 if grep -q "^${key}=" "$sysctl_conf"; then
-                    sed -i '' "s|^${key}=.*|${setting}|" "$sysctl_conf"
+                    atomic_sed_replace "$sysctl_conf" "s|^${key}=.*|${setting}|"
                 else
-                    echo "$setting" | tee -a "$sysctl_conf" >/dev/null
+                    echo "$setting" >>"$sysctl_conf"
                 fi
             fi
         else
@@ -1054,9 +1103,9 @@ EOF
 
             # Update or append the loader.conf entry
             if grep -q "^${key}=" "$loader_conf"; then
-                sed -i '' "s|^${key}=.*|${setting}|" "$loader_conf"
+                atomic_sed_replace "$loader_conf" "s|^${key}=.*|${setting}|"
             else
-                echo "$setting" | tee -a "$loader_conf" >/dev/null
+                echo "$setting" >>"$loader_conf"
             fi
         else
             echo "Warning: Kernel module '${module}' not found in /boot/kernel/ or /boot/modules/"
@@ -1083,6 +1132,7 @@ configure_password_and_umask() {
         echo "Error: 'default:' block not found in /etc/login.conf. Cannot proceed."
         return 1
     fi
+    login_conf_tmp=$(make_secure_tmp "$(dirname /etc/login.conf)")
 
     # Check if Blowfish hashing is already enabled
     blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' /etc/login.conf && echo 1 || echo 0)
@@ -1112,18 +1162,17 @@ configure_password_and_umask() {
     }
     # Print the current line
     { print }
-  ' /etc/login.conf | tee /etc/login.conf.tmp >/dev/null
+  ' /etc/login.conf >"$login_conf_tmp"
 
     # Abort if awk produces an empty file
-    if [ ! -s /etc/login.conf.tmp ]; then
+    if [ ! -s "$login_conf_tmp" ]; then
         echo "Error: Processing login.conf failed."
-        rm /etc/login.conf.tmp
+        rm "$login_conf_tmp"
         return 1
     fi
 
     # Replace the login.conf file atomically
-    chmod 644 /etc/login.conf.tmp
-    mv /etc/login.conf.tmp /etc/login.conf
+    atomic_replace /etc/login.conf "$login_conf_tmp"
 
     # Rebuild login capabilities database
     if ! cap_mkdb /etc/login.conf; then
@@ -1178,7 +1227,7 @@ EOF
 
             # Update the ipfw.rules variable
             if grep -q "^${key}=" "$local_ipfw_rules"; then
-                sed -i '' "s|^${key}=.*|${setting}|" "$local_ipfw_rules"
+                atomic_sed_replace "$local_ipfw_rules" "s|^${key}=.*|${setting}|"
             fi
         done
     else
@@ -1226,11 +1275,11 @@ configure_cron_updates() {
     temp_crontab=$(mktemp /tmp/root_crontab.XXXXXX)
 
     # Write the existing crontab to the temporary file
-    echo "$current_crontab" | tee "$temp_crontab" >/dev/null
+    echo "$current_crontab" >"$temp_crontab"
 
     # Add Suricata update cron job if applicable
     if [ "$install_suricata" = "yes" ] && ! echo "$current_crontab" | grep -qF "$suricata_cmd"; then
-        echo "$suricata_cron" | tee -a "$temp_crontab" >/dev/null
+        echo "$suricata_cron" >>"$temp_crontab"
         echo "Added Suricata update cron job."
     else
         echo "Suricata update cron job already exists or not applicable. Skipping..."
@@ -1238,7 +1287,7 @@ configure_cron_updates() {
 
     # Add FreeBSD update cron job if not already present
     if [ "$freebsd_update_supported" = "yes" ] && ! echo "$current_crontab" | grep -qF "$freebsd_update_cmd"; then
-        echo "$freebsd_update_cron" | tee -a "$temp_crontab" >/dev/null
+        echo "$freebsd_update_cron" >>"$temp_crontab"
         echo "Added FreeBSD update cron job."
     else
         echo "FreeBSD update cron job already exists or not supported. Skipping..."
@@ -1246,7 +1295,7 @@ configure_cron_updates() {
 
     # Add pkg update cron job if not already present
     if ! echo "$current_crontab" | grep -qF "$pkg_update_cmd"; then
-        echo "$pkg_update_cron" | tee -a "$temp_crontab" >/dev/null
+        echo "$pkg_update_cron" >>"$temp_crontab"
         echo "Added pkg update cron job."
     else
         echo "pkg update cron job already exists. Skipping..."
@@ -1265,7 +1314,7 @@ configure_cron_updates() {
 lock_down_system() {
     echo "Locking down critical system files..."
     for file in $service_scheduler_files; do
-        echo "root" | tee "$file" >/dev/null
+        echo "root" >"$file"
     done
     for file in $sensitive_files; do
         chmod o= "$file"
