@@ -1126,16 +1126,17 @@ configure_securelevel() {
 # Set Blowfish password hashing, enforce password expiration, and configure umask
 configure_password_and_umask() {
     echo "Configuring password security with Blowfish encryption and setting a secure umask..."
+    login_conf="/etc/login.conf"
 
     # Check if the 'default' block exists
-    if ! grep -q '^default:' /etc/login.conf; then
-        echo "Error: 'default:' block not found in /etc/login.conf. Cannot proceed."
+    if ! grep -q '^default:' "$login_conf"; then
+        echo "Error: 'default:' block not found in $login_conf. Cannot proceed."
         return 1
     fi
-    login_conf_tmp=$(make_secure_tmp "$(dirname /etc/login.conf)")
+    login_conf_tmp=$(make_secure_tmp "$(dirname "$login_conf")")
 
     # Check if Blowfish hashing is already enabled
-    blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' /etc/login.conf && echo 1 || echo 0)
+    blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' "$login_conf" && echo 1 || echo 0)
 
     # Set Blowfish password hashing, secure umask, and password expiration in one pass
     awk -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}" '
@@ -1162,7 +1163,7 @@ configure_password_and_umask() {
     }
     # Print the current line
     { print }
-  ' /etc/login.conf >"$login_conf_tmp"
+  ' "$login_conf" >"$login_conf_tmp"
 
     # Abort if awk produces an empty file
     if [ ! -s "$login_conf_tmp" ]; then
@@ -1172,10 +1173,10 @@ configure_password_and_umask() {
     fi
 
     # Replace the login.conf file atomically
-    atomic_replace /etc/login.conf "$login_conf_tmp"
+    atomic_replace "$login_conf" "$login_conf_tmp"
 
     # Rebuild login capabilities database
-    if ! cap_mkdb /etc/login.conf; then
+    if ! cap_mkdb "$login_conf"; then
         echo "Error: Failed to rebuild the login.conf database."
         return 1
     fi
