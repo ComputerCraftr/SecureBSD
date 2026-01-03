@@ -441,7 +441,7 @@ collect_user_input() {
 backup_configs() {
     echo "Creating backups of critical configuration files..."
     backup_dir="/etc/backup_$(date +%Y%m%d_%H%M%S)"
-    backup_files="/etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd"
+    backup_files="/etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/ttys"
     mkdir -p "$backup_dir"
     chmod 750 "$backup_dir"
     for conf_file in $backup_files; do
@@ -1123,6 +1123,156 @@ configure_securelevel() {
     echo "Securelevel configured in rc.conf."
 }
 
+harden_ttys() {
+    echo "Hardening /etc/ttys for console password requirement and disabling extra VTs..."
+    ttys_conf="/etc/ttys"
+
+    if [ ! -f "$ttys_conf" ]; then
+        echo "Warning: $ttys_conf not found; skipping."
+        return 0
+    fi
+    ttys_tmp=$(make_secure_tmp "$(dirname "$ttys_conf")")
+
+    awk '
+    BEGIN {
+        OFS="\t";
+    }
+    function trim(s) {
+        sub(/^[[:space:]]+/, "", s);
+        sub(/[[:space:]]+$/, "", s);
+        return s;
+    }
+    function parse_line(line, arr, rest) {
+        arr["name"] = arr["getty"] = arr["type"] = arr["status"] = arr["comment"] = arr["rest"] = "";
+        if (match(line, /^[^[:space:]]+/)) {
+            arr["name"] = substr(line, RSTART, RLENGTH);
+            rest = substr(line, RSTART + RLENGTH);
+        } else {
+            return;
+        }
+        rest = trim(rest);
+        if (match(rest, /^"[^"]+"|^[^[:space:]]+/)) {
+            arr["getty"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        rest = trim(rest);
+        if (match(rest, /^[^[:space:]]+/)) {
+            arr["type"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        rest = trim(rest);
+        if (match(rest, /^[^[:space:]]+/)) {
+            arr["status"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        rest = trim(rest);
+        if (match(rest, /^[^[:space:]]+/)) {
+            arr["comment"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        arr["rest"] = trim(rest);
+    }
+    function print_with_rest(n, g, t, s, c, rest, line) {
+        line = n OFS g OFS t OFS s OFS c;
+        if (rest != "") {
+            line = line OFS rest;
+        }
+        print line;
+    }
+    /^[[:space:]]*#/ || NF==0 { print; next }
+    {
+        parse_line($0, f);
+        if (f["name"] == "") {
+            print;
+            next;
+        }
+        if (f["name"] == "console") {
+            print_with_rest("console", "none", "unknown", "off", "insecure", f["rest"]);
+            next;
+        }
+        if (f["name"] ~ /^ttyv[0-1]$/) {
+            # Keep only ttyv0 and ttyv1 enabled
+            g = (f["getty"] ? f["getty"] : "\"/usr/libexec/getty Pc\"");
+            t = (f["type"] ? f["type"] : "xterm");
+            print_with_rest(f["name"], g, t, "onifexists", "secure", f["rest"]);
+            next;
+        }
+        if (f["name"] ~ /^ttyv[0-9]+$/) {
+            # Disable all other VTs (covers ttyv2 through any higher number)
+            g = (f["getty"] ? f["getty"] : "\"/usr/libexec/getty Pc\"");
+            t = (f["type"] ? f["type"] : "xterm");
+            print_with_rest(f["name"], g, t, "off", "secure", f["rest"]);
+            next;
+        }
+        print;
+    }
+    ' "$ttys_conf" >"$ttys_tmp"
+
+    # Abort if awk produces an empty file
+    if [ ! -s "$ttys_tmp" ]; then
+        echo "Error: Processing $ttys_conf failed."
+        rm "$ttys_tmp"
+        return 1
+    fi
+    if ! awk '
+    function trim(s) {
+        sub(/^[[:space:]]+/, "", s);
+        sub(/[[:space:]]+$/, "", s);
+        return s;
+    }
+    function parse_line(line, arr, rest) {
+        arr["name"] = arr["getty"] = arr["type"] = arr["status"] = arr["comment"] = "";
+        if (match(line, /^[^[:space:]]+/)) {
+            arr["name"] = substr(line, RSTART, RLENGTH);
+            rest = substr(line, RSTART + RLENGTH);
+        } else {
+            return;
+        }
+        rest = trim(rest);
+        if (match(rest, /^"[^"]+"|^[^[:space:]]+/)) {
+            arr["getty"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        rest = trim(rest);
+        if (match(rest, /^[^[:space:]]+/)) {
+            arr["type"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        rest = trim(rest);
+        if (match(rest, /^[^[:space:]]+/)) {
+            arr["status"] = substr(rest, RSTART, RLENGTH);
+            rest = substr(rest, RSTART + RLENGTH);
+        }
+        rest = trim(rest);
+        if (match(rest, /^[^[:space:]]+/)) {
+            arr["comment"] = substr(rest, RSTART, RLENGTH);
+        }
+    }
+    /^[[:space:]]*#/ || NF==0 { next }
+    {
+        parse_line($0, f);
+        if (f["name"] ~ /^console$/) {
+            if (f["getty"] == "" || f["type"] == "" || f["status"] == "" || f["comment"] == "") {
+                print "Invalid console line: " $0 > "/dev/stderr";
+                exit 1;
+            }
+        } else if (f["name"] ~ /^ttyv[0-9]+$/) {
+            if (f["getty"] == "" || f["type"] == "" || f["status"] == "" || f["comment"] == "") {
+                print "Invalid tty line: " $0 > "/dev/stderr";
+                exit 1;
+            }
+        }
+    }
+    ' "$ttys_tmp"; then
+        echo "Error: Validation failed for $ttys_tmp."
+        rm "$ttys_tmp"
+        return 1
+    fi
+
+    atomic_replace "$ttys_conf" "$ttys_tmp"
+    echo "Hardened /etc/ttys and disabled VTs."
+}
+
 # Set Blowfish password hashing, enforce password expiration, and configure umask
 configure_password_and_umask() {
     echo "Configuring password security with Blowfish encryption and setting a secure umask..."
@@ -1344,6 +1494,7 @@ main() {
     secure_syslog_and_tmp
     configure_cron_updates
     configure_securelevel
+    harden_ttys
     harden_loader_conf
     harden_sysctl
     lock_down_system
