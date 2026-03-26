@@ -16,20 +16,41 @@ service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
 audit_log_files="/var/audit"
 sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files"
 
+set_kv_defaults() {
+    kv_list=$1
+    old_ifs=$IFS
+    IFS='
+'
+    for entry in $kv_list; do
+        [ -n "$entry" ] || continue
+        var=${entry%%=*}
+        value=${entry#*=}
+        eval "$var=\${$var-$value}"
+    done
+    IFS=$old_ifs
+}
+
 # Initialize user-configurable variables (can be set via flags or prompts)
-allowed_user=""
-admin_ssh_port=""
-admin_ipv4=""
-admin_ipv6=""
-internal_interface=""
-nat_interface=""
-tunnel_interface=""
-install_auditing_tools=""
-install_microcode=""
-install_suricata=""
-suricata_port=""
-password_expiration=""
-cpu_type="unknown"
+script_config_defaults="
+allowed_user=
+admin_ssh_port=
+admin_ipv4=
+admin_ipv6=
+log_ssh_hits=
+log_wan_tcp_hits=
+allow_multicast=
+allow_multicast_legacy=
+internal_interface=
+nat_interface=
+tunnel_interface=
+install_auditing_tools=
+install_microcode=
+install_suricata=
+suricata_port=
+password_expiration=
+cpu_type=unknown
+"
+set_kv_defaults "$script_config_defaults"
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
@@ -66,6 +87,68 @@ validate_password_expiration() {
     if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -le 0 ]; then
         echo "Error: Invalid password expiration '$1'. Days must be a positive integer."
         return 1
+    fi
+}
+
+validate_yes_no() {
+    value="$1"
+    option_name="$2"
+    if [ "$value" != "yes" ] && [ "$value" != "no" ]; then
+        echo "Invalid value for $option_name: $value (use yes or no)."
+        return 1
+    fi
+}
+
+validate_optional_yes_no() {
+    value="$1"
+    option_name="$2"
+    [ -z "$value" ] || validate_yes_no "$value" "$option_name"
+}
+
+validate_optional_interface() {
+    value="$1"
+    [ -z "$value" ] || [ "$value" = "none" ] || validate_interface "$value"
+}
+
+prompt_yes_no_default() {
+    var_name="$1"
+    prompt_text="$2"
+    default_value="$3"
+    option_name="$4"
+
+    eval "current=\${$var_name-}"
+    if [ -z "$current" ]; then
+        echo "$prompt_text"
+        printf "Enter your choice (default: %s): " "$default_value"
+        read -r current
+        current="${current:-$default_value}"
+        eval "$var_name=\$current"
+    fi
+    validate_yes_no "$current" "$option_name"
+}
+
+prompt_optional_interface() {
+    var_name="$1"
+    prompt_text="$2"
+    prompt_label="$3"
+    provided_label="$4"
+    disable_var="${5:-}"
+
+    eval "current=\${$var_name-}"
+    if [ -z "$current" ]; then
+        echo "$prompt_text"
+        printf "Enter the %s (default: none): " "$prompt_label"
+        read -r current
+        current="${current:-none}"
+        eval "$var_name=\$current"
+        if [ "$current" != "none" ]; then
+            validate_interface "$current"
+        elif [ -n "$disable_var" ]; then
+            eval "$disable_var=no"
+        fi
+    else
+        echo "Using provided $provided_label: $current"
+        validate_optional_interface "$current"
     fi
 }
 
@@ -118,7 +201,43 @@ atomic_sed_replace() {
     atomic_replace "$target" "$tmp_file"
 }
 
+run_awk_transform() {
+    src="$1"
+    tmp_file="$2"
+    error_label="$3"
+    shift 3
+
+    if ! awk "$@" "$src" >"$tmp_file"; then
+        echo "Error: Failed to update $error_label."
+        rm -f "$tmp_file"
+        return 1
+    fi
+    if [ ! -s "$tmp_file" ]; then
+        echo "Error: Processing $error_label failed."
+        rm -f "$tmp_file"
+        return 1
+    fi
+}
+
+apply_kv_settings_file() {
+    target_file="$1"
+    settings="$2"
+
+    if [ ! -f "$target_file" ]; then
+        echo "Error: $target_file not found."
+        return 1
+    fi
+
+    for setting in $settings; do
+        key="${setting%%=*}"
+        if grep -q "^${key}=" "$target_file"; then
+            atomic_sed_replace "$target_file" "s|^${key}=.*|${setting}|"
+        fi
+    done
+}
+
 usage() {
+    exit_code="${1:-1}"
     cat <<EOF
 Usage: $0 [options]
 
@@ -128,9 +247,14 @@ All options are optional; missing values will be prompted interactively.
   -p, --ssh-port PORT             SSH port (default: 2222)
       --ssh-ipv4 LIST             Comma-separated IPv4 list or 'any'
       --ssh-ipv6 LIST             Comma-separated IPv6 list or 'any'
+      --log-ssh-hits yes|no       Enable SSH SYN count/log rules (default: no)
+      --log-wan-tcp-hits yes|no   Enable WAN TCP SYN count/log rules (default: no)
+      --allow-multicast yes|no    Allow modern multicast on the trusted bridge path (default: no)
+      --allow-multicast-legacy yes|no
+                                  Allow legacy IGMP/MLD compatibility when multicast is enabled (default: no)
       --internal-if IFACE         Internal interface (bridge), or 'none'
-      --nat-if IFACE              NAT/VPN IPv4 interface, or 'none'
-      --tunnel-if IFACE           VPN IPv6 tunnel interface, or 'none'
+      --nat-if IFACE              IPv4 VPN/bootstrap egress interface, or 'none'
+      --tunnel-if IFACE           Protected IPv6-over-VPN interface (e.g. tun0 or gif0), or 'none'
       --install-auditing yes|no   Install auditing tools (default: yes)
       --install-microcode yes|no  Install CPU microcode (default: yes)
       --install-suricata yes|no   Install Suricata IPS (default: no)
@@ -141,125 +265,236 @@ All options are optional; missing values will be prompted interactively.
 Examples:
   $0 --user alice --ssh-port 2222 --ssh-ipv4 203.0.113.10,198.51.100.5 --nat-if tun0 --internal-if bridge0
 EOF
-    exit 1
+    exit "$exit_code"
 }
 
 parse_arguments() {
     while [ $# -gt 0 ]; do
         case "$1" in
         -u | --user)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             allowed_user="$2"
             shift 2
             ;;
         -p | --ssh-port)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             admin_ssh_port="$2"
             shift 2
             ;;
         --ssh-ipv4)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             admin_ipv4="$2"
             shift 2
             ;;
         --ssh-ipv6)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             admin_ipv6="$2"
             shift 2
             ;;
+        --log-ssh-hits)
+            [ $# -ge 2 ] || usage 2
+            log_ssh_hits="$2"
+            shift 2
+            ;;
+        --log-wan-tcp-hits)
+            [ $# -ge 2 ] || usage 2
+            log_wan_tcp_hits="$2"
+            shift 2
+            ;;
+        --allow-multicast)
+            [ $# -ge 2 ] || usage 2
+            allow_multicast="$2"
+            shift 2
+            ;;
+        --allow-multicast-legacy)
+            [ $# -ge 2 ] || usage 2
+            allow_multicast_legacy="$2"
+            shift 2
+            ;;
         --internal-if)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             internal_interface="$2"
             shift 2
             ;;
         --nat-if)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             nat_interface="$2"
             shift 2
             ;;
         --tunnel-if)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             tunnel_interface="$2"
             shift 2
             ;;
         --install-auditing)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             install_auditing_tools="$2"
             shift 2
             ;;
         --install-microcode)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             install_microcode="$2"
             shift 2
             ;;
         --install-suricata)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             install_suricata="$2"
             shift 2
             ;;
         --suricata-port)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             suricata_port="$2"
             shift 2
             ;;
         --password-exp)
-            [ $# -ge 2 ] || usage
+            [ $# -ge 2 ] || usage 2
             password_expiration="$2"
             shift 2
             ;;
         -h | --help)
-            usage
+            usage 0
             ;;
         *)
             echo "Unknown option: $1"
-            usage
+            usage 2
             ;;
         esac
     done
 
     # Validate arguments provided via flags
     if [ -n "$allowed_user" ]; then
-        validate_user "$allowed_user"
+        validate_user "$allowed_user" || usage 2
     fi
     if [ -n "$admin_ssh_port" ]; then
-        validate_port "$admin_ssh_port"
+        validate_port "$admin_ssh_port" || usage 2
     fi
     if [ -n "$admin_ipv4" ] && ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
         echo "Invalid IPv4 list '$admin_ipv4'. Use comma-separated IPv4 addresses or 'any'."
-        exit 1
+        usage 2
     fi
     if [ -n "$admin_ipv6" ] && ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
         echo "Invalid IPv6 list '$admin_ipv6'. Use comma-separated IPv6 addresses or 'any'."
-        exit 1
+        usage 2
     fi
-    if [ -n "$internal_interface" ] && [ "$internal_interface" != "none" ]; then
-        validate_interface "$internal_interface"
+    validate_optional_yes_no "$log_ssh_hits" "--log-ssh-hits" || usage 2
+    validate_optional_yes_no "$log_wan_tcp_hits" "--log-wan-tcp-hits" || usage 2
+    validate_optional_yes_no "$allow_multicast" "--allow-multicast" || usage 2
+    validate_optional_yes_no "$allow_multicast_legacy" "--allow-multicast-legacy" || usage 2
+    if [ "${allow_multicast_legacy:-no}" = "yes" ] && [ "${allow_multicast:-no}" != "yes" ]; then
+        echo "--allow-multicast-legacy yes requires --allow-multicast yes."
+        usage 2
     fi
-    if [ -n "$nat_interface" ] && [ "$nat_interface" != "none" ]; then
-        validate_interface "$nat_interface"
-    fi
-    if [ -n "$tunnel_interface" ] && [ "$tunnel_interface" != "none" ]; then
-        validate_interface "$tunnel_interface"
-    fi
-    if [ -n "$install_auditing_tools" ] && [ "$install_auditing_tools" != "yes" ] && [ "$install_auditing_tools" != "no" ]; then
-        echo "Invalid value for --install-auditing: $install_auditing_tools (use yes or no)."
-        exit 1
-    fi
-    if [ -n "$install_microcode" ] && [ "$install_microcode" != "yes" ] && [ "$install_microcode" != "no" ]; then
-        echo "Invalid value for --install-microcode: $install_microcode (use yes or no)."
-        exit 1
-    fi
-    if [ -n "$install_suricata" ] && [ "$install_suricata" != "yes" ] && [ "$install_suricata" != "no" ]; then
-        echo "Invalid value for --install-suricata: $install_suricata (use yes or no)."
-        exit 1
-    fi
+    validate_optional_interface "$internal_interface" || usage 2
+    validate_optional_interface "$nat_interface" || usage 2
+    validate_optional_interface "$tunnel_interface" || usage 2
+    validate_optional_yes_no "$install_auditing_tools" "--install-auditing" || usage 2
+    validate_optional_yes_no "$install_microcode" "--install-microcode" || usage 2
+    validate_optional_yes_no "$install_suricata" "--install-suricata" || usage 2
     if [ -n "$suricata_port" ]; then
-        validate_port "$suricata_port"
+        validate_port "$suricata_port" || usage 2
     fi
     if [ -n "$password_expiration" ] && [ "$password_expiration" != "none" ]; then
-        validate_password_expiration "$password_expiration"
+        validate_password_expiration "$password_expiration" || usage 2
         password_expiration="${password_expiration}d"
     fi
+}
+
+ensure_scalar_setting() {
+    target_file="$1"
+    setting="$2"
+    key="${setting%%=*}"
+
+    if grep -qE "^${setting}([[:space:]]+#.*)?$" "$target_file"; then
+        return 0
+    fi
+    if grep -q "^${key}=" "$target_file"; then
+        atomic_sed_replace "$target_file" "s|^${key}=.*|${setting}|"
+    else
+        printf "%s\n" "$setting" >>"$target_file"
+    fi
+}
+
+ensure_portacl_rule() {
+    target_file="$1"
+    managed_rule="$2"
+    tmp_file=$(make_secure_tmp "$(dirname "$target_file")")
+    root_uid=${managed_rule#uid:}
+    root_uid=${root_uid%%:*}
+
+    # shellcheck disable=SC2016
+    portacl_merge_awk='
+    function trim(s) {
+        sub(/^[[:space:]]+/, "", s)
+        sub(/[[:space:]]+$/, "", s)
+        return s
+    }
+    function normalize_rules(s,    n, i, arr, out) {
+        s = trim(s)
+        if (s == "") return ""
+        n = split(s, arr, /,/)
+        out = ""
+        for (i = 1; i <= n; i++) {
+            arr[i] = trim(arr[i])
+            if (arr[i] == "") continue
+            if (out != "") out = out "," arr[i]
+            else out = arr[i]
+        }
+        return out
+    }
+    BEGIN {
+        found = 0
+        malformed = 0
+    }
+    /^security\.mac\.portacl\.rules=/ {
+        found = 1
+        value = substr($0, index($0, "=") + 1)
+        comment = ""
+        rules_part = value
+        if (match(value, /[[:space:]]+#/)) {
+            rules_part = substr(value, 1, RSTART - 1)
+            comment = substr(value, RSTART)
+        }
+        rules = normalize_rules(rules_part)
+        if (rules == "" && rules_part !~ /^[[:space:]]*$/) {
+            malformed = 1
+            print "Malformed security.mac.portacl.rules line: " $0 > "/dev/stderr"
+            exit 1
+        }
+        n = split(rules, arr, /,/)
+        out = ""
+        managed_seen = 0
+        for (i = 1; i <= n; i++) {
+            rule = trim(arr[i])
+            if (rule == "") continue
+            if (rule ~ ("^uid:" root_uid ":tcp:[0-9]+$")) {
+                if (!managed_seen) {
+                    if (out != "") out = out "," managed_rule
+                    else out = managed_rule
+                    managed_seen = 1
+                }
+                next
+            }
+            if (out != "") out = out "," rule
+            else out = rule
+        }
+        if (!managed_seen) {
+            if (out != "") out = out "," managed_rule
+            else out = managed_rule
+        }
+        print "security.mac.portacl.rules=" out comment
+        next
+    }
+    { print }
+    END {
+        if (malformed) exit 1
+        if (!found) print "security.mac.portacl.rules=" managed_rule
+    }
+    '
+
+    if ! run_awk_transform "$target_file" "$tmp_file" "$target_file" -v managed_rule="$managed_rule" -v root_uid="$root_uid" "$portacl_merge_awk"; then
+        return 1
+    fi
+    atomic_replace "$target_file" "$tmp_file"
 }
 
 # Clear immutable flags on system files for updates
@@ -305,7 +540,7 @@ collect_user_input() {
         printf "Enter the SSH port to use (default: 2222): "
         read -r admin_ssh_port
         admin_ssh_port="${admin_ssh_port:-2222}"
-        validate_port "$admin_ssh_port"
+        validate_port "$admin_ssh_port" || return 1
     else
         echo "Using provided SSH port: $admin_ssh_port"
     fi
@@ -336,63 +571,39 @@ collect_user_input() {
         echo "Using provided SSH IPv6 list: $admin_ipv6"
     fi
 
-    # Internal network interface input (for IPFW filtering bridge and optionally Suricata netmap)
-    if [ -z "$internal_interface" ]; then
-        echo "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)."
-        printf "Enter the internal network interface (e.g., bridge0): "
-        read -r internal_interface
-        internal_interface="${internal_interface:-none}"
-        if [ "$internal_interface" != "none" ]; then
-            validate_interface "$internal_interface"
-        else
-            install_suricata="no"
-        fi
+    prompt_yes_no_default "log_ssh_hits" "Enable SSH SYN count/log rules for firewall debugging? (yes/no)" "no" "--log-ssh-hits" || return 1
+    prompt_yes_no_default "log_wan_tcp_hits" "Enable WAN TCP SYN count/log rules for firewall debugging? (yes/no)" "no" "--log-wan-tcp-hits" || return 1
+    prompt_yes_no_default "allow_multicast" "Allow modern multicast on the trusted internal bridge path? (yes/no)" "no" "--allow-multicast" || return 1
+    if [ "$allow_multicast" = "yes" ]; then
+        prompt_yes_no_default \
+            "allow_multicast_legacy" \
+            "Allow legacy multicast compatibility (IGMPv1, IGMPv2, MLDv1)? (yes/no)" \
+            "no" \
+            "--allow-multicast-legacy" || return 1
     else
-        echo "Using provided internal interface: $internal_interface"
-        if [ "$internal_interface" != "none" ]; then
-            validate_interface "$internal_interface"
-        fi
+        allow_multicast_legacy="no"
     fi
 
-    # NAT tunnel network interface input (for IPFW)
-    if [ -z "$nat_interface" ]; then
-        echo "Set the NAT/IPv4 VPN tunnel network interface for IPFW. Type 'none' if not using NAT (default: none)."
-        printf "Enter the NAT/IPv4 VPN tunnel network interface (e.g., tun0): "
-        read -r nat_interface
-        nat_interface="${nat_interface:-none}"
-        if [ "$nat_interface" != "none" ]; then
-            validate_interface "$nat_interface"
-        fi
-    else
-        echo "Using provided NAT interface: $nat_interface"
-    fi
+    # Interface selection for firewall policy and optional Suricata netmap support
+    prompt_optional_interface \
+        "internal_interface" \
+        "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)." \
+        "internal network interface (e.g., bridge0)" \
+        "internal interface" \
+        "install_suricata" || return 1
+    prompt_optional_interface \
+        "nat_interface" \
+        "Set the IPv4 VPN/bootstrap egress interface for IPFW. Type 'none' if not using a VPN bootstrap path (default: none)." \
+        "IPv4 VPN/bootstrap egress interface (e.g., tun0)" \
+        "NAT interface" || return 1
+    prompt_optional_interface \
+        "tunnel_interface" \
+        "Set the protected IPv6-over-VPN interface for IPFW. This can be the main VPN interface or a 6in4 interface such as gif0 when it runs inside the IPv4 VPN. Type 'none' if not using one (default: none)." \
+        "protected IPv6-over-VPN interface (e.g., tun0, gif0)" \
+        "tunnel interface" || return 1
 
-    # VPN tunnel network interface input (for IPFW)
-    if [ -z "$tunnel_interface" ]; then
-        echo "Set the IPv6 VPN tunnel network interface for IPFW. Type 'none' if not using a VPN (default: none)."
-        printf "Enter the IPv6 VPN tunnel network interface (e.g., tun0, gif0): "
-        read -r tunnel_interface
-        tunnel_interface="${tunnel_interface:-none}"
-        if [ "$tunnel_interface" != "none" ]; then
-            validate_interface "$tunnel_interface"
-        fi
-    else
-        echo "Using provided tunnel interface: $tunnel_interface"
-    fi
-
-    if [ -z "$install_auditing_tools" ]; then
-        echo "Do you want to install security auditing tools? (yes/no)"
-        printf "Enter your choice (default: yes): "
-        read -r install_auditing_tools
-        install_auditing_tools="${install_auditing_tools:-yes}"
-    fi
-
-    if [ -z "$install_microcode" ]; then
-        echo "Would you like to install CPU microcode for your processor to enhance security? (yes/no)"
-        printf "Enter your choice (default: yes): "
-        read -r install_microcode
-        install_microcode="${install_microcode:-yes}"
-    fi
+    prompt_yes_no_default "install_auditing_tools" "Do you want to install security auditing tools? (yes/no)" "yes" "--install-auditing" || return 1
+    prompt_yes_no_default "install_microcode" "Would you like to install CPU microcode for your processor to enhance security? (yes/no)" "yes" "--install-microcode" || return 1
     if [ "$install_microcode" = "yes" ]; then
         cpu_info=$(sysctl -n hw.model | tr '[:upper:]' '[:lower:]')
         if echo "$cpu_info" | grep -qF "intel"; then
@@ -405,21 +616,12 @@ collect_user_input() {
     fi
 
     # Suricata installation choice
-    if [ -z "$install_suricata" ]; then
-        echo "Do you want to install and configure Suricata? (yes/no)"
-        printf "Enter your choice (default: no): "
-        read -r install_suricata
-        install_suricata="${install_suricata:-no}"
-    fi
-    if [ "$install_suricata" != "yes" ] && [ "$install_suricata" != "no" ]; then
-        echo "Invalid input. Please enter 'yes' or 'no'."
-        return 1
-    fi
+    prompt_yes_no_default "install_suricata" "Do you want to install and configure Suricata? (yes/no)" "no" "--install-suricata" || return 1
     if [ "$install_suricata" != "no" ]; then
         if [ -z "$suricata_port" ]; then
             suricata_port="${suricata_port:-8000}" # Define the divert port for IPFW to Suricata
         fi
-        validate_port "$suricata_port"
+        validate_port "$suricata_port" || return 1
     else
         suricata_port="none"
     fi
@@ -431,7 +633,7 @@ collect_user_input() {
         read -r password_expiration
         password_expiration="${password_expiration:-120}"
         if [ "$password_expiration" != "none" ]; then
-            validate_password_expiration "$password_expiration"
+            validate_password_expiration "$password_expiration" || return 1
             password_expiration="${password_expiration}d"
         fi
     fi
@@ -641,41 +843,38 @@ configure_ssh_pam() {
     pam_sshd_tmp=$(make_secure_tmp "$(dirname "$pam_sshd_config")")
 
     # Replace pam_unix.so or insert pam_google_authenticator.so at the correct position
-    awk -v ga_line="$ga_pam_line" '
+    # shellcheck disable=SC2016
+    pam_ssh_awk_program='
     BEGIN {
-      inserted = 0;
+        inserted = 0;
     }
     # Detect auth section lines
     /^auth/ {
-      if (!inserted && $0 ~ /pam_unix\.so/) {
-        # Replace pam_unix.so with pam_google_authenticator.so
-        print ga_line;
-        inserted = 1;
-        next;
-      }
-      if (!inserted && $0 ~ /(sufficient|requisite|binding)/) {
-        # Insert Google Authenticator before terminal rules
-        print ga_line;
-        inserted = 1;
-      }
+        if (!inserted && $0 ~ /pam_unix\.so/) {
+            # Replace pam_unix.so with pam_google_authenticator.so
+            print ga_line;
+            inserted = 1;
+            next;
+        }
+        if (!inserted && $0 ~ /(sufficient|requisite|binding)/) {
+            # Insert Google Authenticator before terminal rules
+            print ga_line;
+            inserted = 1;
+        }
     }
     # Detect transitions to other sections and insert before them
     /^(account|password|session)/ && !inserted {
-      print ga_line;
-      inserted = 1;
+        print ga_line;
+        inserted = 1;
     }
     # Print the current line
     { print }
     # Append at the end if not yet inserted
     END {
-      if (!inserted) print ga_line;
+        if (!inserted) print ga_line;
     }
-  ' "$pam_sshd_config" >"$pam_sshd_tmp"
-
-    # Abort if awk produces an empty file
-    if [ ! -s "$pam_sshd_tmp" ]; then
-        echo "Error: Processing $pam_sshd_config failed."
-        rm "$pam_sshd_tmp"
+    '
+    if ! run_awk_transform "$pam_sshd_config" "$pam_sshd_tmp" "$pam_sshd_config" -v ga_line="$ga_pam_line" "$pam_ssh_awk_program"; then
         return 1
     fi
 
@@ -761,10 +960,12 @@ configure_sudo() {
     fi
 
     # Prompt before disabling wheel group sudo access
-    echo "Do you want to disable sudo access for the wheel group? (yes/no)"
-    printf "Enter your choice (default: yes): "
-    read -r disable_wheel
-    disable_wheel="${disable_wheel:-yes}"
+    disable_wheel=""
+    prompt_yes_no_default \
+        "disable_wheel" \
+        "Do you want to disable sudo access for the wheel group? (yes/no)" \
+        "yes" \
+        "disable_wheel" || return 1
 
     if [ "$disable_wheel" = "yes" ]; then
         echo "Disabling sudo access for the wheel group..."
@@ -787,10 +988,12 @@ configure_sudo() {
     fi
 
     # Prompt to remove non-root members from the wheel group
-    echo "Do you want to remove non-root members from the wheel group? (yes/no)"
-    printf "Enter your choice (default: yes): "
-    read -r remove_wheel_members
-    remove_wheel_members="${remove_wheel_members:-yes}"
+    remove_wheel_members=""
+    prompt_yes_no_default \
+        "remove_wheel_members" \
+        "Do you want to remove non-root members from the wheel group? (yes/no)" \
+        "yes" \
+        "remove_wheel_members" || return 1
 
     if [ "$remove_wheel_members" = "yes" ]; then
         users_removed=""
@@ -925,6 +1128,19 @@ harden_sysctl() {
     echo "Applying sysctl hardening..."
     sysctl_conf="/etc/sysctl.conf"
 
+    multicast_sysctls='
+net.inet.igmp.legacysupp=0
+net.inet.igmp.v2enable=0
+net.inet.igmp.v1enable=0
+net.inet6.mld.v1enable=0'
+    if [ "${allow_multicast:-no}" = "yes" ] && [ "${allow_multicast_legacy:-no}" = "yes" ]; then
+        multicast_sysctls='
+net.inet.igmp.legacysupp=1
+net.inet.igmp.v2enable=1
+net.inet.igmp.v1enable=1
+net.inet6.mld.v1enable=1'
+    fi
+
     # Define the sysctl values to be set
     settings=$(
         cat <<EOF
@@ -932,9 +1148,7 @@ net.link.bridge.pfil_bridge=1
 net.inet.icmp.bmcastecho=0
 net.inet.icmp.drop_redirect=1
 net.inet.icmp.icmplim=50
-net.inet.igmp.legacysupp=0
-net.inet.igmp.v2enable=0
-net.inet.igmp.v1enable=0
+$multicast_sysctls
 net.inet.tcp.blackhole=2
 net.inet.tcp.drop_synfin=1
 net.inet.tcp.syncookies=1
@@ -948,7 +1162,6 @@ net.inet6.icmp6.rediraccept=0
 net.inet6.ip6.redirect=0
 net.inet6.ip6.use_tempaddr=1
 net.inet6.ip6.prefer_tempaddr=1
-net.inet6.mld.v1enable=0
 kern.randompid=1
 security.bsd.hardlink_check_gid=1
 security.bsd.hardlink_check_uid=1
@@ -975,12 +1188,14 @@ EOF
 
         # Use sysctl -d to check if the key exists
         if echo "$key" | grep -qF "net.inet.ip.fw." || sysctl -d "$key" >/dev/null 2>&1; then
-            # If the current value is different from the desired value, update it
-            if ! grep -qE "^${setting}([ \t]+#|,|$)" "$sysctl_conf"; then
-                if grep -q "^${key}=" "$sysctl_conf"; then
-                    atomic_sed_replace "$sysctl_conf" "s|^${key}=.*|${setting}|"
-                else
-                    echo "$setting" >>"$sysctl_conf"
+            # Merge list-style portacl rules; replace simple scalar keys exactly.
+            if [ "$key" = "security.mac.portacl.rules" ]; then
+                if ! ensure_portacl_rule "$sysctl_conf" "${setting#*=}"; then
+                    return 1
+                fi
+            else
+                if ! ensure_scalar_setting "$sysctl_conf" "$setting"; then
+                    return 1
                 fi
             fi
         else
@@ -1289,36 +1504,33 @@ configure_password_and_umask() {
     blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' "$login_conf" && echo 1 || echo 0)
 
     # Set Blowfish password hashing, secure umask, and password expiration in one pass
-    awk -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}" '
+    # shellcheck disable=SC2016
+    login_conf_awk_program='
     BEGIN { in_default = 0; passwordtime_present = 0 }
     # Start processing the "default" block
     /^default:/ { in_default = 1 }
     in_default {
-      # Update passwd_format
-      if ($0 ~ /:passwd_format=/) sub(/:passwd_format=[^:]+:/, ":passwd_format=" new_passwd_format ":");
-      # Update umask
-      if ($0 ~ /:umask=/) sub(/:umask=[0-9]+:/, ":umask=" new_umask ":");
-      # Update passwordtime if it exists
-      if ($0 ~ /:passwordtime=/) {
-        passwordtime_present = 1;
-        if (password_expiration != "none") sub(/:passwordtime=[^:]+:/, ":passwordtime=" password_expiration ":");
-      }
-      # Append passwordtime if missing and the block ends
-      if ($0 !~ /:\\$/) {
-        in_default = 0;
-        if (!passwordtime_present && password_expiration != "none") {
-          print "\t:passwordtime=" password_expiration ":\\";
+        # Update passwd_format
+        if ($0 ~ /:passwd_format=/) sub(/:passwd_format=[^:]+:/, ":passwd_format=" new_passwd_format ":");
+        # Update umask
+        if ($0 ~ /:umask=/) sub(/:umask=[0-9]+:/, ":umask=" new_umask ":");
+        # Update passwordtime if it exists
+        if ($0 ~ /:passwordtime=/) {
+            passwordtime_present = 1;
+            if (password_expiration != "none") sub(/:passwordtime=[^:]+:/, ":passwordtime=" password_expiration ":");
         }
-      }
+        # Append passwordtime if missing and the block ends
+        if ($0 !~ /:\\$/) {
+            in_default = 0;
+            if (!passwordtime_present && password_expiration != "none") {
+                print "\t:passwordtime=" password_expiration ":\\";
+            }
+        }
     }
     # Print the current line
     { print }
-  ' "$login_conf" >"$login_conf_tmp"
-
-    # Abort if awk produces an empty file
-    if [ ! -s "$login_conf_tmp" ]; then
-        echo "Error: Processing login.conf failed."
-        rm "$login_conf_tmp"
+    '
+    if ! run_awk_transform "$login_conf" "$login_conf_tmp" "$login_conf" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}" "$login_conf_awk_program"; then
         return 1
     fi
 
@@ -1368,21 +1580,14 @@ suricata_divert_port="$suricata_port"
 ssh_ip4="$admin_ipv4"
 ssh_ip6="$admin_ipv6"
 ssh_tcp_port="$admin_ssh_port"
+log_ssh_hits="$log_ssh_hits"
+log_wan_tcp_hits="$log_wan_tcp_hits"
+allow_multicast="$allow_multicast"
+allow_multicast_legacy="$allow_multicast_legacy"
 EOF
     )
 
-    # Apply IPFW configuration changes
-    if [ -f "$local_ipfw_rules" ]; then
-        for setting in $settings; do
-            key="${setting%%=*}"
-
-            # Update the ipfw.rules variable
-            if grep -q "^${key}=" "$local_ipfw_rules"; then
-                atomic_sed_replace "$local_ipfw_rules" "s|^${key}=.*|${setting}|"
-            fi
-        done
-    else
-        echo "Error: Local ipfw.rules file not found."
+    if ! apply_kv_settings_file "$local_ipfw_rules" "$settings"; then
         return 1
     fi
 
