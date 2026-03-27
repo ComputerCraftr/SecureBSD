@@ -1,0 +1,32 @@
+%YAML 1.1
+---
+# Configure Suricata for inline packet processing via IPFW (IPS mode)
+ipfw:
+  - interface: @NAT_INTERFACE@
+    divert-port: @SURICATA_PORT@
+    threads: auto
+    checksum-checks: no
+
+# Set Suricata to multi-threaded mode (workers) for efficient traffic processing
+runmode: workers
+
+# Enable inline stream handling for IPS mode
+stream:
+  inline: yes
+
+# Define the priority of actions (pass, drop, reject, alert) for Suricata rules in IPS mode
+action-order:
+  - pass
+  - drop
+  - reject
+  - alert
+
+# Configure Suricata to log events (including dropped packets) to eve.json
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: /var/log/suricata/eve.json
+      types:
+        - drop:
+            enabled: yes

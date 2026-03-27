@@ -15,6 +15,8 @@ password_related_files="/etc/master.passwd"
 service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
 audit_log_files="/var/audit"
 sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files"
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+template_root="$script_dir/templates"
 
 set_kv_defaults() {
     kv_list=$1
@@ -110,6 +112,34 @@ validate_optional_interface() {
     [ -z "$value" ] || [ "$value" = "none" ] || validate_interface "$value"
 }
 
+normalize_admin_ip_list() {
+    value="$1"
+    family="$2"
+
+    if [ "$value" = "any" ]; then
+        printf "%s\n" "$value"
+        return 0
+    fi
+
+    case "$family" in
+    ipv4)
+        allowed_chars='0-9.,'
+        ;;
+    ipv6)
+        allowed_chars='0-9A-Fa-f:.,'
+        ;;
+    *)
+        echo "Error: Unknown IP list family '$family'." >&2
+        return 1
+        ;;
+    esac
+
+    cleaned=$(printf "%s" "$value" |
+        sed "s/[[:space:]]//g; s/[^${allowed_chars}]//g; s/,,*/,/g; s/^,//; s/,\$//")
+    [ -n "$cleaned" ] || return 1
+    printf "%s\n" "$cleaned"
+}
+
 prompt_yes_no_default() {
     var_name="$1"
     prompt_text="$2"
@@ -201,13 +231,26 @@ atomic_sed_replace() {
     atomic_replace "$target" "$tmp_file"
 }
 
-run_awk_transform() {
+template_path() {
+    rel_path="$1"
+    printf "%s/%s\n" "$template_root" "$rel_path"
+}
+
+run_awk_template() {
     src="$1"
     tmp_file="$2"
     error_label="$3"
-    shift 3
+    template_rel="$4"
+    shift 4
+    awk_program=$(template_path "$template_rel")
 
-    if ! awk "$@" "$src" >"$tmp_file"; then
+    if [ ! -f "$awk_program" ]; then
+        echo "Error: AWK template not found: $awk_program"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    if ! awk "$@" -f "$awk_program" "$src" >"$tmp_file"; then
         echo "Error: Failed to update $error_label."
         rm -f "$tmp_file"
         return 1
@@ -217,6 +260,46 @@ run_awk_transform() {
         rm -f "$tmp_file"
         return 1
     fi
+}
+
+render_template_file() {
+    template_rel="$1"
+    target="$2"
+    shift 2
+
+    template_file=$(template_path "$template_rel")
+    if [ ! -f "$template_file" ]; then
+        echo "Error: Template not found: $template_file"
+        return 1
+    fi
+
+    tmp_file=$(make_secure_tmp "$(dirname "$target")")
+    if ! cp "$template_file" "$tmp_file"; then
+        echo "Error: Failed to copy template $template_file."
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    for replacement in "$@"; do
+        placeholder=${replacement%%=*}
+        value=${replacement#*=}
+        escaped_value=$(printf "%s" "$value" | sed 's/[&|\\]/\\&/g')
+        next_tmp="${tmp_file}.next"
+        if ! sed "s|$placeholder|$escaped_value|g" "$tmp_file" >"$next_tmp"; then
+            echo "Error: Failed to render template $template_file."
+            rm -f "$tmp_file" "$next_tmp"
+            return 1
+        fi
+        mv "$next_tmp" "$tmp_file"
+    done
+
+    if [ ! -s "$tmp_file" ]; then
+        echo "Error: Rendering template $template_file failed."
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    atomic_replace "$target" "$tmp_file"
 }
 
 apply_kv_settings_file() {
@@ -368,13 +451,17 @@ parse_arguments() {
     if [ -n "$admin_ssh_port" ]; then
         validate_port "$admin_ssh_port" || usage 2
     fi
-    if [ -n "$admin_ipv4" ] && ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
-        echo "Invalid IPv4 list '$admin_ipv4'. Use comma-separated IPv4 addresses or 'any'."
-        usage 2
+    if [ -n "$admin_ipv4" ]; then
+        admin_ipv4=$(normalize_admin_ip_list "$admin_ipv4" ipv4) || {
+            echo "Invalid IPv4 list '$admin_ipv4'. Use comma-separated IPv4 addresses or 'any'."
+            usage 2
+        }
     fi
-    if [ -n "$admin_ipv6" ] && ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
-        echo "Invalid IPv6 list '$admin_ipv6'. Use comma-separated IPv6 addresses or 'any'."
-        usage 2
+    if [ -n "$admin_ipv6" ]; then
+        admin_ipv6=$(normalize_admin_ip_list "$admin_ipv6" ipv6) || {
+            echo "Invalid IPv6 list '$admin_ipv6'. Use comma-separated IPv6 addresses or 'any'."
+            usage 2
+        }
     fi
     validate_optional_yes_no "$log_ssh_hits" "--log-ssh-hits" || usage 2
     validate_optional_yes_no "$log_wan_tcp_hits" "--log-wan-tcp-hits" || usage 2
@@ -421,77 +508,7 @@ ensure_portacl_rule() {
     root_uid=${managed_rule#uid:}
     root_uid=${root_uid%%:*}
 
-    # shellcheck disable=SC2016
-    portacl_merge_awk='
-    function trim(s) {
-        sub(/^[[:space:]]+/, "", s)
-        sub(/[[:space:]]+$/, "", s)
-        return s
-    }
-    function normalize_rules(s,    n, i, arr, out) {
-        s = trim(s)
-        if (s == "") return ""
-        n = split(s, arr, /,/)
-        out = ""
-        for (i = 1; i <= n; i++) {
-            arr[i] = trim(arr[i])
-            if (arr[i] == "") continue
-            if (out != "") out = out "," arr[i]
-            else out = arr[i]
-        }
-        return out
-    }
-    BEGIN {
-        found = 0
-        malformed = 0
-    }
-    /^security\.mac\.portacl\.rules=/ {
-        found = 1
-        value = substr($0, index($0, "=") + 1)
-        comment = ""
-        rules_part = value
-        if (match(value, /[[:space:]]+#/)) {
-            rules_part = substr(value, 1, RSTART - 1)
-            comment = substr(value, RSTART)
-        }
-        rules = normalize_rules(rules_part)
-        if (rules == "" && rules_part !~ /^[[:space:]]*$/) {
-            malformed = 1
-            print "Malformed security.mac.portacl.rules line: " $0 > "/dev/stderr"
-            exit 1
-        }
-        n = split(rules, arr, /,/)
-        out = ""
-        managed_seen = 0
-        for (i = 1; i <= n; i++) {
-            rule = trim(arr[i])
-            if (rule == "") continue
-            if (rule ~ ("^uid:" root_uid ":tcp:[0-9]+$")) {
-                if (!managed_seen) {
-                    if (out != "") out = out "," managed_rule
-                    else out = managed_rule
-                    managed_seen = 1
-                }
-                next
-            }
-            if (out != "") out = out "," rule
-            else out = rule
-        }
-        if (!managed_seen) {
-            if (out != "") out = out "," managed_rule
-            else out = managed_rule
-        }
-        print "security.mac.portacl.rules=" out comment
-        next
-    }
-    { print }
-    END {
-        if (malformed) exit 1
-        if (!found) print "security.mac.portacl.rules=" managed_rule
-    }
-    '
-
-    if ! run_awk_transform "$target_file" "$tmp_file" "$target_file" -v managed_rule="$managed_rule" -v root_uid="$root_uid" "$portacl_merge_awk"; then
+    if ! run_awk_template "$target_file" "$tmp_file" "$target_file" "awk/portacl_merge.awk" -v managed_rule="$managed_rule" -v root_uid="$root_uid"; then
         return 1
     fi
     atomic_replace "$target_file" "$tmp_file"
@@ -550,10 +567,10 @@ collect_user_input() {
         echo "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
         printf "Enter the admin IPv4 addresses (comma-separated) for SSH access: "
         read -r admin_ipv4
-        if ! echo "$admin_ipv4" | grep -qE '^[0-9.,]+$|^any$'; then
+        admin_ipv4=$(normalize_admin_ip_list "$admin_ipv4" ipv4) || {
             echo "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
             return 1
-        fi
+        }
     else
         echo "Using provided SSH IPv4 list: $admin_ipv4"
     fi
@@ -563,10 +580,10 @@ collect_user_input() {
         echo "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
         printf "Enter the admin IPv6 addresses (comma-separated) for SSH access: "
         read -r admin_ipv6
-        if ! echo "$admin_ipv6" | grep -qE '^[a-fA-F0-9:.,]+$|^any$'; then
+        admin_ipv6=$(normalize_admin_ip_list "$admin_ipv6" ipv6) || {
             echo "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
             return 1
-        fi
+        }
     else
         echo "Using provided SSH IPv6 list: $admin_ipv6"
     fi
@@ -734,7 +751,17 @@ EOF
         if grep -q "^#\?${key} " "$sshd_config"; then
             if [ "$key" = "AllowUsers" ]; then
                 # Ensure we only add user if not already in the list
-                if ! grep -qE "^${key}\b.*\b${value}\b" "$sshd_config"; then
+                if ! awk -v key="$key" -v value="$value" '
+                    $1 == key {
+                        for (i = 2; i <= NF; i++) {
+                            if ($i == value) {
+                                found = 1
+                                exit
+                            }
+                        }
+                    }
+                    END { exit found ? 0 : 1 }
+                ' "$sshd_config"; then
                     atomic_sed_replace "$sshd_config" -E "s|^#?${key} (.*)|${setting} \1|"
                 fi
             else
@@ -842,39 +869,7 @@ configure_ssh_pam() {
     fi
     pam_sshd_tmp=$(make_secure_tmp "$(dirname "$pam_sshd_config")")
 
-    # Replace pam_unix.so or insert pam_google_authenticator.so at the correct position
-    # shellcheck disable=SC2016
-    pam_ssh_awk_program='
-    BEGIN {
-        inserted = 0;
-    }
-    # Detect auth section lines
-    /^auth/ {
-        if (!inserted && $0 ~ /pam_unix\.so/) {
-            # Replace pam_unix.so with pam_google_authenticator.so
-            print ga_line;
-            inserted = 1;
-            next;
-        }
-        if (!inserted && $0 ~ /(sufficient|requisite|binding)/) {
-            # Insert Google Authenticator before terminal rules
-            print ga_line;
-            inserted = 1;
-        }
-    }
-    # Detect transitions to other sections and insert before them
-    /^(account|password|session)/ && !inserted {
-        print ga_line;
-        inserted = 1;
-    }
-    # Print the current line
-    { print }
-    # Append at the end if not yet inserted
-    END {
-        if (!inserted) print ga_line;
-    }
-    '
-    if ! run_awk_transform "$pam_sshd_config" "$pam_sshd_tmp" "$pam_sshd_config" -v ga_line="$ga_pam_line" "$pam_ssh_awk_program"; then
+    if ! run_awk_template "$pam_sshd_config" "$pam_sshd_tmp" "$pam_sshd_config" "awk/pam_sshd_google_auth.awk" -v ga_line="$ga_pam_line"; then
         return 1
     fi
 
@@ -1028,41 +1023,11 @@ configure_suricata() {
     suricata_custom_conf="/usr/local/etc/suricata/suricata-custom.yaml"
     suricata_rules="/var/lib/suricata/rules/custom.rules"
 
-    # Create or update the Suricata custom configuration file
-    cat <<EOF >"$suricata_custom_conf"
-%YAML 1.1
----
-# Configure Suricata for inline packet processing via IPFW (IPS mode)
-ipfw:
-  - interface: $nat_interface
-    divert-port: $suricata_port
-    threads: auto
-    checksum-checks: no
-
-# Set Suricata to multi-threaded mode (workers) for efficient traffic processing
-runmode: workers
-
-# Enable inline stream handling for IPS mode
-stream:
-  inline: yes
-
-# Define the priority of actions (pass, drop, reject, alert) for Suricata rules in IPS mode
-action-order:
-  - pass
-  - drop
-  - reject
-  - alert
-
-# Configure Suricata to log events (including dropped packets) to eve.json
-outputs:
-  - eve-log:
-      enabled: yes
-      filetype: regular
-      filename: /var/log/suricata/eve.json
-      types:
-        - drop:
-            enabled: yes
-EOF
+    if ! render_template_file "config/suricata-custom.yaml.tmpl" "$suricata_custom_conf" \
+        "@NAT_INTERFACE@=$nat_interface" \
+        "@SURICATA_PORT@=$suricata_port"; then
+        return 1
+    fi
 
     # Update SSH port in suricata.yaml using sed to match single values or lists
     atomic_sed_replace "$suricata_conf" -E "s/(SSH_PORTS: )([0-9]+|\\[[0-9, ]+\\])/\1$admin_ssh_port/"
@@ -1098,23 +1063,10 @@ EOF
 configure_fail2ban() {
     echo "Configuring Fail2Ban to protect SSH and add manual permanent ban jail..."
 
-    # Configure Fail2Ban jail
     echo "Creating Fail2Ban jail.local for SSH and manual bans..."
-    cat <<EOF >/usr/local/etc/fail2ban/jail.local
-[sshd]
-enabled = true
-filter = sshd
-maxretry = 3
-bantime = 3600  # 1 hour ban
-findtime = 600  # 10 minutes window to track failed attempts
-action = bsd-ipfw[table=fail2ban]
-
-[manualbans]
-enabled = true
-filter =
-bantime = -1  # Permanent ban
-action = bsd-ipfw[table=fail2ban]
-EOF
+    if ! render_template_file "config/fail2ban-jail.local.tmpl" "/usr/local/etc/fail2ban/jail.local"; then
+        return 1
+    fi
 
     # Enable Fail2Ban service
     echo "Enabling Fail2Ban service..."
@@ -1348,137 +1300,11 @@ harden_ttys() {
     fi
     ttys_tmp=$(make_secure_tmp "$(dirname "$ttys_conf")")
 
-    awk '
-    BEGIN {
-        OFS="\t";
-    }
-    function trim(s) {
-        sub(/^[[:space:]]+/, "", s);
-        sub(/[[:space:]]+$/, "", s);
-        return s;
-    }
-    function parse_line(line, arr, rest) {
-        arr["name"] = arr["getty"] = arr["type"] = arr["status"] = arr["comment"] = arr["rest"] = "";
-        if (match(line, /^[^[:space:]]+/)) {
-            arr["name"] = substr(line, RSTART, RLENGTH);
-            rest = substr(line, RSTART + RLENGTH);
-        } else {
-            return;
-        }
-        rest = trim(rest);
-        if (match(rest, /^"[^"]+"|^[^[:space:]]+/)) {
-            arr["getty"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        rest = trim(rest);
-        if (match(rest, /^[^[:space:]]+/)) {
-            arr["type"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        rest = trim(rest);
-        if (match(rest, /^[^[:space:]]+/)) {
-            arr["status"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        rest = trim(rest);
-        if (match(rest, /^[^[:space:]]+/)) {
-            arr["comment"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        arr["rest"] = trim(rest);
-    }
-    function print_with_rest(n, g, t, s, c, rest, line) {
-        line = n OFS g OFS t OFS s OFS c;
-        if (rest != "") {
-            line = line OFS rest;
-        }
-        print line;
-    }
-    /^[[:space:]]*#/ || NF==0 { print; next }
-    {
-        parse_line($0, f);
-        if (f["name"] == "") {
-            print;
-            next;
-        }
-        if (f["name"] == "console") {
-            print_with_rest("console", "none", "unknown", "off", "insecure", f["rest"]);
-            next;
-        }
-        if (f["name"] ~ /^ttyv[0-1]$/) {
-            # Keep only ttyv0 and ttyv1 enabled
-            g = (f["getty"] ? f["getty"] : "\"/usr/libexec/getty Pc\"");
-            t = (f["type"] ? f["type"] : "xterm");
-            print_with_rest(f["name"], g, t, "onifexists", "secure", f["rest"]);
-            next;
-        }
-        if (f["name"] ~ /^ttyv[0-9]+$/) {
-            # Disable all other VTs (covers ttyv2 through any higher number)
-            g = (f["getty"] ? f["getty"] : "\"/usr/libexec/getty Pc\"");
-            t = (f["type"] ? f["type"] : "xterm");
-            print_with_rest(f["name"], g, t, "off", "secure", f["rest"]);
-            next;
-        }
-        print;
-    }
-    ' "$ttys_conf" >"$ttys_tmp"
-
-    # Abort if awk produces an empty file
-    if [ ! -s "$ttys_tmp" ]; then
-        echo "Error: Processing $ttys_conf failed."
-        rm "$ttys_tmp"
+    if ! run_awk_template "$ttys_conf" "$ttys_tmp" "$ttys_conf" "awk/ttys_harden.awk"; then
         return 1
     fi
-    if ! awk '
-    function trim(s) {
-        sub(/^[[:space:]]+/, "", s);
-        sub(/[[:space:]]+$/, "", s);
-        return s;
-    }
-    function parse_line(line, arr, rest) {
-        arr["name"] = arr["getty"] = arr["type"] = arr["status"] = arr["comment"] = "";
-        if (match(line, /^[^[:space:]]+/)) {
-            arr["name"] = substr(line, RSTART, RLENGTH);
-            rest = substr(line, RSTART + RLENGTH);
-        } else {
-            return;
-        }
-        rest = trim(rest);
-        if (match(rest, /^"[^"]+"|^[^[:space:]]+/)) {
-            arr["getty"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        rest = trim(rest);
-        if (match(rest, /^[^[:space:]]+/)) {
-            arr["type"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        rest = trim(rest);
-        if (match(rest, /^[^[:space:]]+/)) {
-            arr["status"] = substr(rest, RSTART, RLENGTH);
-            rest = substr(rest, RSTART + RLENGTH);
-        }
-        rest = trim(rest);
-        if (match(rest, /^[^[:space:]]+/)) {
-            arr["comment"] = substr(rest, RSTART, RLENGTH);
-        }
-    }
-    /^[[:space:]]*#/ || NF==0 { next }
-    {
-        parse_line($0, f);
-        if (f["name"] ~ /^console$/) {
-            if (f["getty"] == "" || f["type"] == "" || f["status"] == "" || f["comment"] == "") {
-                print "Invalid console line: " $0 > "/dev/stderr";
-                exit 1;
-            }
-        } else if (f["name"] ~ /^ttyv[0-9]+$/) {
-            if (f["getty"] == "" || f["type"] == "" || f["status"] == "" || f["comment"] == "") {
-                print "Invalid tty line: " $0 > "/dev/stderr";
-                exit 1;
-            }
-        }
-    }
-    ' "$ttys_tmp"; then
+
+    if ! awk -f "$(template_path "awk/ttys_validate.awk")" "$ttys_tmp"; then
         echo "Error: Validation failed for $ttys_tmp."
         rm "$ttys_tmp"
         return 1
@@ -1503,34 +1329,7 @@ configure_password_and_umask() {
     # Check if Blowfish hashing is already enabled
     blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' "$login_conf" && echo 1 || echo 0)
 
-    # Set Blowfish password hashing, secure umask, and password expiration in one pass
-    # shellcheck disable=SC2016
-    login_conf_awk_program='
-    BEGIN { in_default = 0; passwordtime_present = 0 }
-    # Start processing the "default" block
-    /^default:/ { in_default = 1 }
-    in_default {
-        # Update passwd_format
-        if ($0 ~ /:passwd_format=/) sub(/:passwd_format=[^:]+:/, ":passwd_format=" new_passwd_format ":");
-        # Update umask
-        if ($0 ~ /:umask=/) sub(/:umask=[0-9]+:/, ":umask=" new_umask ":");
-        # Update passwordtime if it exists
-        if ($0 ~ /:passwordtime=/) {
-            passwordtime_present = 1;
-            if (password_expiration != "none") sub(/:passwordtime=[^:]+:/, ":passwordtime=" password_expiration ":");
-        }
-        # Append passwordtime if missing and the block ends
-        if ($0 !~ /:\\$/) {
-            in_default = 0;
-            if (!passwordtime_present && password_expiration != "none") {
-                print "\t:passwordtime=" password_expiration ":\\";
-            }
-        }
-    }
-    # Print the current line
-    { print }
-    '
-    if ! run_awk_transform "$login_conf" "$login_conf_tmp" "$login_conf" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}" "$login_conf_awk_program"; then
+    if ! run_awk_template "$login_conf" "$login_conf_tmp" "$login_conf" "awk/login_conf_defaults.awk" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}"; then
         return 1
     fi
 
@@ -1568,7 +1367,7 @@ configure_password_and_umask() {
 configure_ipfw() {
     echo "Configuring IPFW firewall with Suricata and Dummynet..."
     ipfw_rules="/etc/ipfw.rules"
-    local_ipfw_rules="./ipfw.rules"
+    local_ipfw_rules="$script_dir/ipfw.rules"
 
     # Define the ipfw.rules values to be set
     settings=$(
