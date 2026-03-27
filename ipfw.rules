@@ -81,6 +81,7 @@ suricata_port=
 ssh_ipv4=
 ssh_ipv6=
 ssh_port=
+port_transition_old_port=
 log_ssh_hits=no
 log_wan_tcp_hits=no
 allow_multicast=no
@@ -96,7 +97,7 @@ nat_if_in_bw=
 nat_if_out_bw=
 log_default_deny=no
 "
-scalar_config_vars="
+public_scalar_config_vars="
 nat_if tun_if internal_if vpn_endpoints_ip4 vpn_tcp_port vpn_udp_port vpn_dns_ip4
 suricata_port ssh_ipv4 ssh_ipv6 ssh_port log_ssh_hits log_wan_tcp_hits allow_multicast allow_multicast_legacy dhcp_ip4
 lan_tcp_ports lan_udp_ports wan_tcp_ports wan_udp_ports
@@ -134,13 +135,18 @@ blocked_addrs_ip6="::/128,\
 5f00::/16"
 
 # Allow environment variable overrides (upper-case only).
-apply_upper_overrides "$scalar_config_vars blocked_addrs_ip4 blocked_addrs_ip6"
+apply_upper_overrides "$public_scalar_config_vars blocked_addrs_ip4 blocked_addrs_ip6"
 if [ "${allow_multicast:-no}" != "yes" ]; then
     blocked_addrs_ip4="224.0.0.0/4,${blocked_addrs_ip4}"
     blocked_addrs_ip6="ff00::/8,${blocked_addrs_ip6}"
 fi
 set_default_if_empty "pipe_tcp_ports" "$wan_tcp_ports"
 set_default_if_empty "pipe_udp_ports" "$wan_udp_ports"
+ssh_ports="${ssh_port-}"
+if [ -n "${port_transition_old_port:-}" ] && [ "$port_transition_old_port" != "none" ] &&
+    [ "$port_transition_old_port" != "${ssh_port-}" ]; then
+    ssh_ports="$port_transition_old_port,${ssh_port-}"
+fi
 
 # Check if IPv6 is available by detecting any IPv6 addresses
 ipv6_available=$(ifconfig | grep -qwF "inet6" && echo 1 || echo 0)
@@ -432,11 +438,11 @@ ${fwcmd} add 270 deny ip from 'table(blocked)' to any in
 # Inbound Traffic (User-Defined Services)
 #################################
 # Allow new SSH connections from allowed source IPs to the firewall
-if [ -n "${ssh_ipv4:-}" ] && [ "$ssh_ipv4" != "none" ] && [ -n "${ssh_port:-}" ] && [ "$ssh_port" != "none" ]; then
+if [ -n "${ssh_ipv4:-}" ] && [ "$ssh_ipv4" != "none" ] && [ -n "${ssh_ports:-}" ] && [ "$ssh_ports" != "none" ]; then
     if [ "${log_ssh_hits:-no}" = "yes" ]; then
-        ${fwcmd} add 300 count log ip4 from "$ssh_ipv4" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in
+        ${fwcmd} add 300 count log ip4 from "$ssh_ipv4" to me "$ssh_ports" tcpflags syn,!ack,!fin,!rst in
     fi
-    ${fwcmd} add 301 allow ip4 from "$ssh_ipv4" to me "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+    ${fwcmd} add 301 allow ip4 from "$ssh_ipv4" to me "$ssh_ports" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
 fi
 
 # Allow trusted internal user connections to the firewall, keeping LAN traffic on the fast path
@@ -459,11 +465,11 @@ fi
 
 # IPv6 SSH and user rules (if IPv6 is available)
 if [ "$ipv6_available" -eq 1 ]; then
-    if [ -n "${ssh_ipv6:-}" ] && [ "$ssh_ipv6" != "none" ] && [ -n "${ssh_port:-}" ] && [ "$ssh_port" != "none" ]; then
+    if [ -n "${ssh_ipv6:-}" ] && [ "$ssh_ipv6" != "none" ] && [ -n "${ssh_ports:-}" ] && [ "$ssh_ports" != "none" ]; then
         if [ "${log_ssh_hits:-no}" = "yes" ]; then
-            ${fwcmd} add 310 count log ip6 from "$ssh_ipv6" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in
+            ${fwcmd} add 310 count log ip6 from "$ssh_ipv6" to me6 "$ssh_ports" tcpflags syn,!ack,!fin,!rst in
         fi
-        ${fwcmd} add 311 allow ip6 from "$ssh_ipv6" to me6 "$ssh_port" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
+        ${fwcmd} add 311 allow ip6 from "$ssh_ipv6" to me6 "$ssh_ports" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
     fi
     if [ -n "${lan_tcp_ports:-}" ] && [ "$lan_tcp_ports" != "none" ] && [ "$internal_if_available" -eq 1 ]; then
         ${fwcmd} add 312 allow ip6 from any to me6 "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$internal_if" record-state

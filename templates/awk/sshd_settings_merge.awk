@@ -24,8 +24,13 @@ function parse_setting_line(setting,    first_space, key, value) {
         return 0
     }
 
-    setting_line[key] = setting
-    setting_value[key] = value
+    if (key == "Port") {
+        port_setting[++port_setting_count] = setting
+        port_setting_seen[value] = 1
+    } else {
+        setting_line[key] = setting
+        setting_value[key] = value
+    }
     if (!(key in setting_seen_order)) {
         setting_order[++setting_order_count] = key
         setting_seen_order[key] = 1
@@ -54,6 +59,12 @@ function extract_value(line,    stripped, first_space, value) {
     }
     value = substr(stripped, first_space + 1)
     return trim(value)
+}
+
+function print_port_settings(    idx) {
+    for (idx = 1; idx <= port_setting_count; idx++) {
+        print port_setting[idx]
+    }
 }
 
 function allowusers_has_target(value, target,    count, i, parts) {
@@ -90,12 +101,19 @@ END {
         line = lines[i]
         key = extract_key(line)
 
-        if (!(key in setting_line)) {
+        if (!(key in setting_line) && !(key == "Port" && port_setting_count > 0)) {
             print line
             continue
         }
 
         seen_key[key] = 1
+        if (key == "Port") {
+            if (!port_printed) {
+                print_port_settings()
+                port_printed = 1
+            }
+            continue
+        }
         if (key == "AllowUsers") {
             if (allowusers_target_present) {
                 print line
@@ -117,7 +135,14 @@ END {
     for (i = 1; i <= setting_order_count; i++) {
         key = setting_order[i]
         if (!(key in seen_key)) {
-            print setting_line[key]
+            if (key == "Port") {
+                if (!port_printed) {
+                    print_port_settings()
+                    port_printed = 1
+                }
+            } else {
+                print setting_line[key]
+            }
         }
     }
 }
