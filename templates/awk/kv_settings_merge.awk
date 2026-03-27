@@ -3,6 +3,10 @@
 #   -v append_missing="yes|no"
 
 BEGIN {
+    if (settings_file == "") {
+        print "kv_settings_merge.awk requires -v settings_file=/path/to/settings" > "/dev/stderr"
+        exit 1
+    }
     while ((getline setting < settings_file) > 0) {
         if (setting == "") {
             continue

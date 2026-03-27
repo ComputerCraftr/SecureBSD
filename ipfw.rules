@@ -10,7 +10,7 @@ populate_addr_table() {
     table_name=$1
     addr_list=$2
 
-    [ -n "${addr_list:-}" ] && [ "$addr_list" != "none" ] || return 0
+    is_configured "${addr_list:-}" || return 0
 
     clean_list=$(printf "%s" "$addr_list" |
         sed 's/[[:space:]]//g; s/[^0-9A-Fa-f:./,]//g; s/,,*/,/g; s/^,//; s/,$//; s/,/\
@@ -35,6 +35,18 @@ set_kv_defaults() {
     IFS=$old_ifs
 }
 
+set_kv_defaults_if_empty() {
+    kv_list=$1
+    old_ifs=$IFS
+    IFS='
+'
+    for entry in $kv_list; do
+        [ -n "$entry" ] || continue
+        set_default_if_empty "${entry%%=*}" "${entry#*=}"
+    done
+    IFS=$old_ifs
+}
+
 apply_upper_overrides() {
     var_list=$1
     for var in $var_list; do
@@ -52,9 +64,39 @@ set_default_if_empty() {
     [ -n "$current_value" ] || eval "$var_name=\$2"
 }
 
+effective_scalar_default_values="
+pipe_tcp_ports=${wan_tcp_ports-}
+pipe_udp_ports=${wan_udp_ports-}
+allow_multicast=no
+allow_multicast_legacy=no
+log_ssh_hits=no
+log_wan_tcp_hits=no
+log_default_deny=no
+"
+
+resolve_effective_scalar_defaults() {
+    set_kv_defaults_if_empty "$effective_scalar_default_values"
+}
+
+is_yes() {
+    [ "${1:-no}" = "yes" ]
+}
+
+is_not_yes() {
+    ! is_yes "${1:-no}"
+}
+
+is_none() {
+    [ "${1:-}" = "none" ]
+}
+
+is_configured() {
+    [ -n "${1:-}" ] && ! is_none "$1"
+}
+
 interface_is_available() {
     iface_name=$1
-    [ -n "${iface_name:-}" ] && [ "$iface_name" != "none" ] && ifconfig "$iface_name" >/dev/null 2>&1
+    is_configured "${iface_name:-}" && ifconfig "$iface_name" >/dev/null 2>&1
 }
 
 # Rule number map
@@ -136,29 +178,35 @@ blocked_addrs_ip6="::/128,\
 
 # Allow environment variable overrides (upper-case only).
 apply_upper_overrides "$public_scalar_config_vars blocked_addrs_ip4 blocked_addrs_ip6"
-if [ "${allow_multicast:-no}" != "yes" ]; then
+resolve_effective_scalar_defaults
+allow_multicast="${allow_multicast-no}"
+allow_multicast_legacy="${allow_multicast_legacy-no}"
+log_ssh_hits="${log_ssh_hits-no}"
+log_wan_tcp_hits="${log_wan_tcp_hits-no}"
+log_default_deny="${log_default_deny-no}"
+
+if is_not_yes "$allow_multicast"; then
     blocked_addrs_ip4="224.0.0.0/4,${blocked_addrs_ip4}"
     blocked_addrs_ip6="ff00::/8,${blocked_addrs_ip6}"
 fi
-set_default_if_empty "pipe_tcp_ports" "$wan_tcp_ports"
-set_default_if_empty "pipe_udp_ports" "$wan_udp_ports"
+
 ssh_ports="${ssh_port-}"
-if [ -n "${port_transition_old_port:-}" ] && [ "$port_transition_old_port" != "none" ] &&
+if is_configured "${port_transition_old_port:-}" &&
     [ "$port_transition_old_port" != "${ssh_port-}" ]; then
     ssh_ports="$port_transition_old_port,${ssh_port-}"
 fi
 
 # Check if IPv6 is available by detecting any IPv6 addresses
-ipv6_available=$(ifconfig | grep -qwF "inet6" && echo 1 || echo 0)
+ipv6_available=$(ifconfig | grep -qwF "inet6" && printf '1' || printf '0')
 
 # Check if each interface is available
-nat_if_available=$(interface_is_available "${nat_if-}" && echo 1 || echo 0)
-tun_if_available=$(interface_is_available "${tun_if-}" && echo 1 || echo 0)
+nat_if_available=$(interface_is_available "${nat_if-}" && printf '1' || printf '0')
+tun_if_available=$(interface_is_available "${tun_if-}" && printf '1' || printf '0')
 if [ "$nat_if_available" -eq 1 ] && [ "$tun_if_available" -ne 1 ]; then
     tun_if="$nat_if"
     tun_if_available="$nat_if_available"
 fi
-internal_if_available=$(interface_is_available "${internal_if-}" && echo 1 || echo 0)
+internal_if_available=$(interface_is_available "${internal_if-}" && printf '1' || printf '0')
 
 # Flush existing rules
 ${fwcmd} -q flush
@@ -185,8 +233,7 @@ if [ "$internal_if_available" -eq 1 ] && [ "$nat_if_available" -eq 1 ]; then
 fi
 
 # Provision dummynet objects used by later rules
-if { [ -n "${pipe_tcp_ports:-}" ] && [ "$pipe_tcp_ports" != "none" ]; } ||
-    { [ -n "${pipe_udp_ports:-}" ] && [ "$pipe_udp_ports" != "none" ]; }; then
+if is_configured "${pipe_tcp_ports:-}" || is_configured "${pipe_udp_ports:-}"; then
     ${fwcmd} pipe 1 config bw 1Mbit/s buckets 2048 mask src-ip 0xffffffff dst-ip 0xffffffff type fq_codel target 5ms quantum 6000 flows 2048 interval 400
     if [ "$ipv6_available" -eq 1 ]; then
         ${fwcmd} pipe 2 config bw 1Mbit/s buckets 2048 mask src-ip6 60 dst-ip6 60 type fq_codel target 5ms quantum 6000 flows 2048 interval 400
@@ -194,11 +241,11 @@ if { [ -n "${pipe_tcp_ports:-}" ] && [ "$pipe_tcp_ports" != "none" ]; } ||
 fi
 
 if [ "$nat_if_available" -eq 1 ]; then
-    if [ -n "${nat_if_in_bw:-}" ] && [ "$nat_if_in_bw" != "none" ]; then
+    if is_configured "${nat_if_in_bw:-}"; then
         ${fwcmd} pipe 3 config bw "$nat_if_in_bw" type fq_codel target 5ms quantum 6000 flows 2048 interval 400
         ${fwcmd} queue 3 config pipe 3
     fi
-    if [ -n "${nat_if_out_bw:-}" ] && [ "$nat_if_out_bw" != "none" ]; then
+    if is_configured "${nat_if_out_bw:-}"; then
         ${fwcmd} pipe 4 config bw "$nat_if_out_bw" type fq_codel target 5ms quantum 6000 flows 2048 interval 400
         ${fwcmd} queue 4 config pipe 4
     fi
@@ -228,9 +275,8 @@ ${fwcmd} add 120 deny ip4 from any to any frag mf
 # Network Traffic Shaping
 #################################
 # Limit user connection bandwidth
-if { [ -n "${pipe_tcp_ports:-}" ] && [ "$pipe_tcp_ports" != "none" ]; } ||
-    { [ -n "${pipe_udp_ports:-}" ] && [ "$pipe_udp_ports" != "none" ]; }; then
-    pipe_ports=$(echo "$pipe_tcp_ports,$pipe_udp_ports" | sed -E 's/^,+//;s/,+$//')
+if is_configured "${pipe_tcp_ports:-}" || is_configured "${pipe_udp_ports:-}"; then
+    pipe_ports=$(printf '%s\n' "$pipe_tcp_ports,$pipe_udp_ports" | sed -E 's/^,+//;s/,+$//')
     ${fwcmd} add 130 pipe 1 ip4 from any to me "$pipe_ports" in
     ${fwcmd} add 131 pipe 1 ip4 from me "$pipe_ports" to any out
     if [ "$ipv6_available" -eq 1 ]; then
@@ -241,10 +287,10 @@ fi
 
 # Shape all traffic on the IPv4 VPN/bootstrap egress interface (in/out) using fq_codel
 if [ "$nat_if_available" -eq 1 ]; then
-    if [ -n "${nat_if_in_bw:-}" ] && [ "$nat_if_in_bw" != "none" ]; then
+    if is_configured "${nat_if_in_bw:-}"; then
         ${fwcmd} add 134 queue 3 ip from any to any in recv "$nat_if"
     fi
-    if [ -n "${nat_if_out_bw:-}" ] && [ "$nat_if_out_bw" != "none" ]; then
+    if is_configured "${nat_if_out_bw:-}"; then
         ${fwcmd} add 135 queue 4 ip from any to any out xmit "$nat_if"
     fi
 fi
@@ -261,7 +307,7 @@ fi
 # Suricata Traffic Diversion
 #################################
 # Divert inbound traffic on the IPv4 VPN/bootstrap egress interface to Suricata for inline IPS processing
-if [ "$nat_if_available" -eq 1 ] && [ -n "${suricata_port:-}" ] && [ "$suricata_port" != "none" ]; then
+if [ "$nat_if_available" -eq 1 ] && is_configured "${suricata_port:-}"; then
     ${fwcmd} add 150 divert "$suricata_port" ip from any to any not proto icmp not proto ipv6-icmp in recv "$nat_if"
 fi
 
@@ -316,8 +362,8 @@ if [ "$ipv6_available" -eq 1 ]; then
     ${fwcmd} add 186 deny ipv6-icmp from any to "fe80::/10,ff00::/8" ext6hdr frag
 
     # Allow multicast listener control traffic on the trusted internal interface only for the all-nodes and MLDv2-router multicast groups
-    if [ "${allow_multicast:-no}" = "yes" ] && [ "$internal_if_available" -eq 1 ]; then
-        if [ "${allow_multicast_legacy:-no}" = "yes" ]; then
+    if is_yes "$allow_multicast" && [ "$internal_if_available" -eq 1 ]; then
+        if is_yes "$allow_multicast_legacy"; then
             ${fwcmd} add 187 allow ipv6-icmp from any to "ff02::1,ff02::16" icmp6types 130,131,132,143 in recv "$internal_if"
         else
             ${fwcmd} add 187 allow ipv6-icmp from any to "ff02::1,ff02::16" icmp6types 130,143 in recv "$internal_if"
@@ -345,19 +391,19 @@ if [ "$internal_if_available" -eq 1 ] && [ "$tun_if_available" -eq 1 ]; then
     fi
 
     # Allow bootstrap traffic to the IPv4 VPN endpoints/proxies
-    if [ -n "${vpn_endpoints_ip4:-}" ] && [ "$vpn_endpoints_ip4" != "none" ]; then
+    if is_configured "${vpn_endpoints_ip4:-}"; then
         ${fwcmd} add 203 allow icmp from me to "$vpn_endpoints_ip4" icmptypes 8 out record-state
         ${fwcmd} add 204 allow icmp from me to "$vpn_endpoints_ip4" out
-        if [ -n "${vpn_tcp_port:-}" ] && [ "$vpn_tcp_port" != "none" ]; then
+        if is_configured "${vpn_tcp_port:-}"; then
             ${fwcmd} add 205 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_tcp_port" tcpflags syn,!ack,!fin,!rst out record-state
         fi
-        if [ -n "${vpn_udp_port:-}" ] && [ "$vpn_udp_port" != "none" ]; then
+        if is_configured "${vpn_udp_port:-}"; then
             ${fwcmd} add 206 allow ip4 from me to "$vpn_endpoints_ip4" "$vpn_udp_port" proto udp out record-state
         fi
     fi
 
     # Allow bootstrap DNS traffic to the VPN setup DNS servers
-    if [ -n "${vpn_dns_ip4:-}" ] && [ "$vpn_dns_ip4" != "none" ]; then
+    if is_configured "${vpn_dns_ip4:-}"; then
         ${fwcmd} add 207 allow ip4 from me to "$vpn_dns_ip4" 53 out record-state
     fi
 fi
@@ -375,10 +421,10 @@ ${fwcmd} add 223 deny ip from any to any ipoptions ts in
 # DHCP and Broadcast Traffic
 #################################
 # Allow DHCPv4 traffic (outbound/inbound)
-if [ "$dhcp_ip4" = "any" ]; then
+if [ "${dhcp_ip4:-}" = "any" ]; then
     ${fwcmd} add 230 allow ip4 from any 68 to any 67 proto udp
     ${fwcmd} add 231 allow ip4 from any 67 to any 68 proto udp
-elif [ -n "${dhcp_ip4:-}" ] && [ "$dhcp_ip4" != "none" ]; then
+elif is_configured "${dhcp_ip4:-}"; then
     ${fwcmd} add 230 allow ip4 from any 68 to \{ "$dhcp_ip4" or 255.255.255.255 \} 67 proto udp
     ${fwcmd} add 231 allow ip4 from "$dhcp_ip4" 67 to any 68 proto udp
 else
@@ -438,52 +484,52 @@ ${fwcmd} add 270 deny ip from 'table(blocked)' to any in
 # Inbound Traffic (User-Defined Services)
 #################################
 # Allow new SSH connections from allowed source IPs to the firewall
-if [ -n "${ssh_ipv4:-}" ] && [ "$ssh_ipv4" != "none" ] && [ -n "${ssh_ports:-}" ] && [ "$ssh_ports" != "none" ]; then
-    if [ "${log_ssh_hits:-no}" = "yes" ]; then
+if is_configured "${ssh_ipv4:-}" && is_configured "${ssh_ports:-}"; then
+    if is_yes "$log_ssh_hits"; then
         ${fwcmd} add 300 count log ip4 from "$ssh_ipv4" to me "$ssh_ports" tcpflags syn,!ack,!fin,!rst in
     fi
     ${fwcmd} add 301 allow ip4 from "$ssh_ipv4" to me "$ssh_ports" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
 fi
 
 # Allow trusted internal user connections to the firewall, keeping LAN traffic on the fast path
-if [ -n "${lan_tcp_ports:-}" ] && [ "$lan_tcp_ports" != "none" ] && [ "$internal_if_available" -eq 1 ]; then
+if is_configured "${lan_tcp_ports:-}" && [ "$internal_if_available" -eq 1 ]; then
     ${fwcmd} add 302 allow ip4 from any to me "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$internal_if" record-state
 fi
-if [ -n "${lan_udp_ports:-}" ] && [ "$lan_udp_ports" != "none" ] && [ "$internal_if_available" -eq 1 ]; then
+if is_configured "${lan_udp_ports:-}" && [ "$internal_if_available" -eq 1 ]; then
     ${fwcmd} add 303 allow ip4 from any to me "$lan_udp_ports" proto udp in recv "$internal_if" record-state
 fi
 # Allow WAN-facing services with stricter dynamic controls
-if [ -n "${wan_tcp_ports:-}" ] && [ "$wan_tcp_ports" != "none" ]; then
-    if [ "${log_wan_tcp_hits:-no}" = "yes" ]; then
+if is_configured "${wan_tcp_ports:-}"; then
+    if is_yes "$log_wan_tcp_hits"; then
         ${fwcmd} add 304 count log ip4 from any to me "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in
     fi
     ${fwcmd} add 305 allow ip4 from any to me "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
 fi
-if [ -n "${wan_udp_ports:-}" ] && [ "$wan_udp_ports" != "none" ]; then
+if is_configured "${wan_udp_ports:-}"; then
     ${fwcmd} add 306 allow ip4 from any to me "$wan_udp_ports" proto udp in
 fi
 
 # IPv6 SSH and user rules (if IPv6 is available)
 if [ "$ipv6_available" -eq 1 ]; then
-    if [ -n "${ssh_ipv6:-}" ] && [ "$ssh_ipv6" != "none" ] && [ -n "${ssh_ports:-}" ] && [ "$ssh_ports" != "none" ]; then
-        if [ "${log_ssh_hits:-no}" = "yes" ]; then
+    if is_configured "${ssh_ipv6:-}" && is_configured "${ssh_ports:-}"; then
+        if is_yes "$log_ssh_hits"; then
             ${fwcmd} add 310 count log ip6 from "$ssh_ipv6" to me6 "$ssh_ports" tcpflags syn,!ack,!fin,!rst in
         fi
         ${fwcmd} add 311 allow ip6 from "$ssh_ipv6" to me6 "$ssh_ports" tcpflags syn,!ack,!fin,!rst in limit dst-addr 2
     fi
-    if [ -n "${lan_tcp_ports:-}" ] && [ "$lan_tcp_ports" != "none" ] && [ "$internal_if_available" -eq 1 ]; then
+    if is_configured "${lan_tcp_ports:-}" && [ "$internal_if_available" -eq 1 ]; then
         ${fwcmd} add 312 allow ip6 from any to me6 "$lan_tcp_ports" tcpflags syn,!ack,!fin,!rst in recv "$internal_if" record-state
     fi
-    if [ -n "${lan_udp_ports:-}" ] && [ "$lan_udp_ports" != "none" ] && [ "$internal_if_available" -eq 1 ]; then
+    if is_configured "${lan_udp_ports:-}" && [ "$internal_if_available" -eq 1 ]; then
         ${fwcmd} add 313 allow ip6 from any to me6 "$lan_udp_ports" proto udp in recv "$internal_if" record-state
     fi
-    if [ -n "${wan_tcp_ports:-}" ] && [ "$wan_tcp_ports" != "none" ]; then
-        if [ "${log_wan_tcp_hits:-no}" = "yes" ]; then
+    if is_configured "${wan_tcp_ports:-}"; then
+        if is_yes "$log_wan_tcp_hits"; then
             ${fwcmd} add 314 count log ip6 from any to me6 "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in
         fi
         ${fwcmd} add 315 allow ip6 from any to me6 "$wan_tcp_ports" tcpflags syn,!ack,!fin,!rst in limit src-addr 10
     fi
-    if [ -n "${wan_udp_ports:-}" ] && [ "$wan_udp_ports" != "none" ]; then
+    if is_configured "${wan_udp_ports:-}"; then
         ${fwcmd} add 316 allow ip6 from any to me6 "$wan_udp_ports" proto udp in
     fi
 fi
@@ -492,7 +538,7 @@ fi
 # Inbound Internal Traffic
 #################################
 # Deny any inbound traffic to me that hasn't been explicitly allowed
-if [ "${log_default_deny:-no}" = "yes" ]; then
+if is_yes "$log_default_deny"; then
     ${fwcmd} add 320 deny log ip from any to me in
     if [ "$ipv6_available" -eq 1 ]; then
         ${fwcmd} add 321 deny log ip from any to me6 in
@@ -507,7 +553,7 @@ fi
 # Allow trusted bridge/transit traffic on the internal interface, keeping multicast control traffic gated by policy
 if [ "$internal_if_available" -eq 1 ]; then
     ${fwcmd} add 322 allow ip from any to any tcpflags syn,!ack,!fin,!rst in recv "$internal_if" record-state
-    if [ "${allow_multicast:-no}" = "yes" ]; then
+    if is_yes "$allow_multicast"; then
         ${fwcmd} add 323 allow \{ udp or igmp \} from any to any in recv "$internal_if" record-state
     else
         ${fwcmd} add 323 allow udp from any to any in recv "$internal_if" record-state
@@ -518,7 +564,7 @@ fi
 # Final Rule: Deny all other traffic
 #################################
 # Deny any traffic that hasn't been explicitly allowed
-if [ "${log_default_deny:-no}" = "yes" ]; then
+if is_yes "$log_default_deny"; then
     ${fwcmd} add 390 deny log ip from any to any
 else
     ${fwcmd} add 390 deny ip from any to any

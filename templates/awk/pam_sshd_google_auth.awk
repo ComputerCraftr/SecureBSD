@@ -2,6 +2,10 @@
 #   -v ga_line="auth requisite pam_google_authenticator.so"
 
 BEGIN {
+    if (ga_line == "") {
+        print "pam_sshd_google_auth.awk requires -v ga_line='auth ...'" > "/dev/stderr"
+        exit 1
+    }
     inserted = 0
 }
 

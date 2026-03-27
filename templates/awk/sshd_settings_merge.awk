@@ -81,6 +81,10 @@ function allowusers_has_target(value, target,    count, i, parts) {
 }
 
 BEGIN {
+    if (settings_file == "") {
+        print "sshd_settings_merge.awk requires -v settings_file=/path/to/settings" > "/dev/stderr"
+        exit 1
+    }
     while ((getline setting < settings_file) > 0) {
         parse_setting_line(setting)
     }
@@ -91,15 +95,47 @@ BEGIN {
 {
     lines[++line_count] = $0
     key = extract_key($0)
-    if (key == "AllowUsers" && allowusers_has_target(extract_value($0), allowusers_target)) {
+    if (!in_match && key == "Match") {
+        in_match = 1
+    }
+    if (!in_match && key == "AllowUsers" && allowusers_has_target(extract_value($0), allowusers_target)) {
         allowusers_target_present = 1
     }
 }
 
+function print_missing_global_settings(    idx, key) {
+    for (idx = 1; idx <= setting_order_count; idx++) {
+        key = setting_order[idx]
+        if (!(key in seen_key)) {
+            if (key == "Port") {
+                if (!port_printed) {
+                    print_port_settings()
+                    port_printed = 1
+                }
+            } else {
+                print setting_line[key]
+            }
+            seen_key[key] = 1
+        }
+    }
+    globals_flushed = 1
+}
+
 END {
+    in_match = 0
     for (i = 1; i <= line_count; i++) {
         line = lines[i]
         key = extract_key(line)
+
+        if (key == "Match" && !globals_flushed) {
+            print_missing_global_settings()
+            in_match = 1
+        }
+
+        if (in_match) {
+            print line
+            continue
+        }
 
         if (!(key in setting_line) && !(key == "Port" && port_setting_count > 0)) {
             print line
@@ -132,17 +168,7 @@ END {
         print setting_line[key]
     }
 
-    for (i = 1; i <= setting_order_count; i++) {
-        key = setting_order[i]
-        if (!(key in seen_key)) {
-            if (key == "Port") {
-                if (!port_printed) {
-                    print_port_settings()
-                    port_printed = 1
-                }
-            } else {
-                print setting_line[key]
-            }
-        }
+    if (!globals_flushed) {
+        print_missing_global_settings()
     }
 }

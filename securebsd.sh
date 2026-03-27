@@ -7,40 +7,13 @@ set -eu
 # Global Constants And State
 ###############################################################################
 
-# Immutable file lists and path constants
-service_scheduler_files="/var/cron/allow /var/at/at.allow"
-full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab \
-/usr/local/etc/sudoers /usr/local/etc/sudoers.d/sudo /etc/sysctl.conf /boot/loader.conf \
-/boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf \
-/etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
-
-# Combine all sensitive files into one list for restricting "others" permissions (chmod o=)
-password_related_files="/etc/master.passwd"
-service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
-audit_log_files="/var/audit"
-sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files"
+# Repository and managed-state paths
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 template_root="$script_dir/templates"
 cutover_state_dir="/var/db/securebsd"
 cutover_state_file="$cutover_state_dir/admin_cutover.state"
-managed_firewall_base_vars="internal_if nat_if tun_if ssh_ipv4 ssh_ipv6 log_ssh_hits log_wan_tcp_hits allow_multicast allow_multicast_legacy suricata_port"
-mutable_baseline_override_vars="$managed_firewall_base_vars install_suricata"
-managed_firewall_context_vars="$managed_firewall_base_vars"
-managed_firewall_rules_state_vars="$managed_firewall_base_vars port_transition_old_port"
-managed_ipfw_emit_vars="$managed_firewall_base_vars ssh_port port_transition_old_port"
-sudo_policy_line='%sudo ALL=(ALL:ALL) ALL'
-strict_ssh_effective_policy_lines='
-passwordauthentication no
-kbdinteractiveauthentication yes
-pubkeyauthentication yes
-usepam yes
-authenticationmethods publickey,keyboard-interactive
-'
-managed_firewall_rc_conf_lines='
-firewall_enable="YES"
-firewall_script="/etc/ipfw.rules"
-firewall_logging="YES"
-'
+
+# Managed system config paths
 sshd_config_file="/etc/ssh/sshd_config"
 pam_sshd_config_file="/etc/pam.d/sshd"
 loader_conf_file="/boot/loader.conf"
@@ -50,7 +23,88 @@ source_ipfw_rules_file="$script_dir/ipfw.rules"
 suricata_conf_file="/usr/local/etc/suricata/suricata.yaml"
 suricata_custom_conf_file="/usr/local/etc/suricata/suricata-custom.yaml"
 suricata_rules_file="/var/lib/suricata/rules/custom.rules"
-wheel_sudo_regex='^%wheel[[:blank:]]+ALL=\(ALL(:ALL)?\)[[:blank:]]+(NOPASSWD:[[:blank:]]+)?ALL'
+
+# Immutable file sets
+service_scheduler_files="/var/cron/allow /var/at/at.allow"
+full_lockdown_files="$service_scheduler_files /etc/rc.firewall /etc/ipfw.rules /etc/crontab \
+/usr/local/etc/sudoers /usr/local/etc/sudoers.d/sudo /etc/sysctl.conf /boot/loader.conf \
+/boot/loader.rc /etc/fstab /etc/login.conf /etc/login.access /etc/newsyslog.conf \
+/etc/ssh/sshd_config /etc/pam.d/sshd /etc/hosts /etc/hosts.allow /etc/ttys"
+password_related_files="/etc/master.passwd"
+service_related_files="/etc/rc.conf /usr/local/etc/anacrontab"
+audit_log_files="/var/audit"
+sensitive_files="$service_scheduler_files $password_related_files $service_related_files $audit_log_files"
+
+# FreeBSD config literals
+freebsd_true="YES"
+freebsd_false="NO"
+
+# Default input values
+default_ssh_port="2222"
+default_suricata_port="8000"
+default_password_expiration_days="120"
+
+# Shared policy strings and regex
+sudo_policy_line='%sudo ALL=(ALL:ALL) ALL'
+ssh_pam_ga_line='auth requisite pam_google_authenticator.so'
+strict_ssh_effective_policy_lines='
+passwordauthentication no
+kbdinteractiveauthentication yes
+pubkeyauthentication yes
+usepam yes
+authenticationmethods publickey,keyboard-interactive
+'
+
+# Firewall policy surfaces
+firewall_full_scope_set="load,reapply,validate,render"
+firewall_transition_scope_set="validate,render"
+firewall_policy_var_defs="
+internal_if=$firewall_full_scope_set
+nat_if=$firewall_full_scope_set
+tun_if=$firewall_full_scope_set
+ssh_ipv4=$firewall_full_scope_set
+ssh_ipv6=$firewall_full_scope_set
+log_ssh_hits=$firewall_full_scope_set
+log_wan_tcp_hits=$firewall_full_scope_set
+allow_multicast=$firewall_full_scope_set
+allow_multicast_legacy=$firewall_full_scope_set
+suricata_port=$firewall_full_scope_set
+install_suricata=reapply
+ssh_port=render
+port_transition_old_port=$firewall_transition_scope_set
+"
+
+# Managed FreeBSD config blocks
+managed_firewall_rc_conf_settings='
+firewall_enable=YES
+firewall_script=/etc/ipfw.rules
+firewall_logging=YES
+'
+suricata_rc_conf_settings='
+suricata_enable=YES
+'
+fail2ban_rc_conf_settings='
+fail2ban_enable=YES
+'
+securelevel_rc_conf_settings='
+kern_securelevel_enable=YES
+kern_securelevel=1
+'
+syslog_tmp_rc_conf_settings='
+syslogd_flags=-ss
+clear_tmp_enable=YES
+'
+
+# Operator-facing status and guidance messages
+managed_cutover_cli_omit_message="Rerun without --user, --ssh-port, --disable-wheel, or --remove-wheel-members for a normal managed baseline reapply."
+managed_cutover_cli_preserve_state_message="Do not clear the managed cutover state just to continue an existing managed cutover, especially during SSH port migration."
+managed_cutover_cli_restart_message="Only clear the managed cutover state if you are intentionally abandoning the current managed cutover context and starting a brand-new staged cutover from scratch."
+managed_ssh_port_transition_resolution_message="A new --ssh-port on a committed managed host uses the staged SSH port migration flow. Keep the managed cutover state in place and let the script perform the staged port transition; do not clear the managed cutover state just to change the SSH port."
+committed_ssh_port_transition_mode_message="Committed managed state detected. This run is switching from fast-path baseline reapply to staged SSH port migration because --ssh-port changed."
+pending_cutover_cli_resolution_message="An in-progress managed cutover already owns --user, --ssh-port, --disable-wheel, and --remove-wheel-members. Rerun without cutover-defining flags and use only --confirm-stage-advance yes to continue the current cutover."
+stale_cutover_cli_resolution_message="The saved managed cutover state is stale or incomplete. Rerun without cutover-defining flags for ordinary managed maintenance. Only clear the managed cutover state if you are intentionally abandoning the current cutover context and starting a brand-new staged cutover from scratch; do not clear it to continue an SSH port migration."
+pending_port_reboot_next_step="Reboot the host, verify a fresh login on the new SSH port, then rerun this script with --confirm-stage-advance yes to remove the old SSH port from the managed boot policy."
+pending_port_commit_reboot_next_step="Reboot the host, verify a fresh login on the new SSH port again, then rerun this script with --confirm-stage-advance yes to finalize the port migration."
 
 # Public operator inputs
 public_cli_config_defaults="
@@ -75,8 +129,32 @@ remove_wheel_members=
 confirm_stage_advance=
 cpu_type=unknown
 "
+runtime_default_values="
+allow_multicast=no
+allow_multicast_legacy=no
+confirm_stage_advance=no
+"
+package_option_default_values="
+install_auditing=yes
+install_microcode=yes
+"
 
-# Persisted internal cutover state
+# Persisted cutover schema
+cutover_state_var_defs='
+cutover_stage=stage
+cutover_boot_marker=direct
+user=direct
+cutover_user_uid=direct
+ssh_port=direct
+transitional_ssh_port=stage
+disable_wheel=direct
+remove_wheel_members=direct
+wheel_sudo_finalized=direct
+wheel_membership_finalized=direct
+port_transition_old_port=stage
+'
+
+# Persisted internal cutover defaults
 internal_cutover_state_defaults="
 transitional_ssh_port=
 wheel_sudo_finalized=
@@ -84,6 +162,11 @@ wheel_membership_finalized=
 cutover_boot_marker=
 port_transition_old_port=
 "
+
+# Derived mutable runtime state
+public_cutover_fields="user ssh_port disable_wheel remove_wheel_members"
+desired_mutable_baseline_settings=""
+saved_public_cutover_settings=""
 
 ###############################################################################
 # Generic Utility Helpers
@@ -103,8 +186,241 @@ set_kv_defaults() {
     IFS=$old_ifs
 }
 
+set_kv_defaults_if_empty() {
+    kv_list=$1
+    old_ifs=$IFS
+    IFS='
+'
+    for entry in $kv_list; do
+        [ -n "$entry" ] || continue
+        set_var_if_empty "${entry%%=*}" "${entry#*=}"
+    done
+    IFS=$old_ifs
+}
+
+get_var_value() {
+    target_var="$1"
+    eval "printf '%s\n' \"\${$target_var-}\""
+}
+
+set_var_value() {
+    target_var="$1"
+    target_value="${2-}"
+    eval "$target_var=\$target_value"
+}
+
+clear_vars() {
+    var_list="$1"
+    old_ifs=$IFS
+    IFS=' '
+    for target_var in $var_list; do
+        [ -n "$target_var" ] || continue
+        set_var_value "$target_var" ""
+    done
+    IFS=$old_ifs
+}
+
+set_var_if_empty() {
+    target_var="$1"
+    default_value="$2"
+    current_value=$(get_var_value "$target_var")
+    [ -n "$current_value" ] || set_var_value "$target_var" "$default_value"
+}
+
+set_default_if_empty() {
+    var_name=$1
+    default_value=$2
+    set_var_if_empty "$var_name" "$default_value"
+}
+
+say() {
+    printf '%s\n' "$*"
+}
+
+say_err() {
+    printf '%s\n' "$*" >&2
+}
+
+warn_msg() {
+    say "Warning: $*"
+}
+
+error_msg() {
+    say_err "Error: $*"
+}
+
+defined_kv_vars() {
+    kv_list="$1"
+    old_ifs=$IFS
+    IFS='
+'
+    for entry in $kv_list; do
+        [ -n "$entry" ] || continue
+        printf '%s ' "${entry%%=*}"
+    done
+    IFS=$old_ifs
+}
+
+policy_vars_for_scope() {
+    target_scope="$1"
+    old_ifs=$IFS
+    IFS='
+'
+    for policy_entry in $firewall_policy_var_defs; do
+        [ -n "$policy_entry" ] || continue
+        policy_var=${policy_entry%%=*}
+        policy_scopes=${policy_entry#*=}
+        case ",$policy_scopes," in
+        *",$target_scope,"*)
+            printf '%s ' "$policy_var"
+            ;;
+        esac
+    done
+    IFS=$old_ifs
+}
+
+cutover_state_value() {
+    state_field="$1"
+
+    case "$(settings_block_value "$cutover_state_var_defs" "$state_field" 2>/dev/null || printf 'direct')" in
+    stage)
+        stage_owned_cutover_state_value "$state_field"
+        ;;
+    *)
+        get_var_value "$state_field"
+        ;;
+    esac
+}
+
+resolved_wheel_policy_finalized_state() {
+    requested_value="$1"
+    finalized_value="$2"
+    if ! value_is_yes "$requested_value" || value_is_yes "$finalized_value"; then
+        printf '%s\n' "yes"
+    else
+        printf '%s\n' "no"
+    fi
+}
+
+value_is_yes() {
+    [ "${1:-no}" = "yes" ]
+}
+
+value_is_none() {
+    [ "${1:-}" = "none" ]
+}
+
+value_is_configured() {
+    [ -n "${1:-}" ] && ! value_is_none "$1"
+}
+
+resolve_install_suricata_default() {
+    if [ -z "${install_suricata-}" ]; then
+        if value_is_configured "${suricata_port-}"; then
+            install_suricata="yes"
+        else
+            install_suricata="no"
+        fi
+    fi
+}
+
+resolve_suricata_port_default() {
+    if suricata_requested; then
+        set_var_if_empty "suricata_port" "$default_suricata_port"
+    fi
+}
+
+resolve_runtime_defaults() {
+    set_kv_defaults_if_empty "$runtime_default_values"
+    resolve_install_suricata_default
+    resolve_suricata_port_default
+}
+
+resolve_package_option_defaults() {
+    set_kv_defaults_if_empty "$package_option_default_values"
+    resolve_install_suricata_default
+}
+
+detect_cpu_type() {
+    cpu_info=$(sysctl -n hw.model | tr '[:upper:]' '[:lower:]')
+    if printf '%s\n' "$cpu_info" | grep -qF "intel"; then
+        printf '%s\n' "intel"
+    elif printf '%s\n' "$cpu_info" | grep -qF "amd"; then
+        printf '%s\n' "amd"
+    else
+        printf '%s\n' "unknown"
+    fi
+}
+
+validate_cpu_type() {
+    case "$1" in
+    intel | amd | unknown)
+        ;;
+    *)
+        error_msg "Invalid cpu_type '$1'. Use intel, amd, or unknown."
+        return 1
+        ;;
+    esac
+}
+
+resolve_password_expiration_value() {
+    set_var_if_empty "password_exp" "$default_password_expiration_days"
+
+    case "$password_exp" in
+    none)
+        printf '%s\n' "none"
+        ;;
+    *d)
+        printf '%s\n' "$password_exp"
+        ;;
+    *)
+        printf '%sd\n' "$password_exp"
+        ;;
+    esac
+}
+
+validate_password_expiration_value() {
+    value="$1"
+
+    case "$value" in
+    none)
+        return 0
+        ;;
+    *d)
+        validate_password_expiration "${value%d}"
+        ;;
+    *)
+        validate_password_expiration "$value"
+        ;;
+    esac
+}
+
+validate_suricata_cli_consistency() {
+    if value_is_configured "${suricata_port-}" && ! suricata_requested; then
+        error_msg "--suricata-port requires --install-suricata yes."
+        return 1
+    fi
+
+    if suricata_requested && value_is_none "${suricata_port:-}"; then
+        error_msg "--install-suricata yes requires a real --suricata-port, not 'none'."
+        return 1
+    fi
+
+    if suricata_requested && suricata_ports_defined && ! value_is_configured "${nat_if:-none}"; then
+        error_msg "Suricata firewall integration requires --nat-if to be set to a real interface."
+        return 1
+    fi
+}
+
 set_kv_defaults "$public_cli_config_defaults"
 set_kv_defaults "$internal_cutover_state_defaults"
+
+reapplied_firewall_vars=$(policy_vars_for_scope reapply)
+loaded_firewall_vars=$(policy_vars_for_scope load)
+validated_firewall_vars=$(policy_vars_for_scope validate)
+rendered_firewall_vars=$(policy_vars_for_scope render)
+supported_cli_options=$(defined_kv_vars "$public_cli_config_defaults")
+persisted_cutover_state_vars=$(defined_kv_vars "$cutover_state_var_defs")
 
 # Captured CLI identity/policy values
 cli_user="${user-}"
@@ -113,24 +429,16 @@ cli_disable_wheel="${disable_wheel-}"
 cli_remove_wheel_members="${remove_wheel_members-}"
 
 capture_desired_mutable_baseline_settings() {
-    for override_var in $mutable_baseline_override_vars; do
-        eval "desired_value=\${$override_var-}"
-        eval "desired_$override_var=\$desired_value"
-    done
+    desired_mutable_baseline_settings=$(settings_block_for_vars "$reapplied_firewall_vars")
 }
 
 restore_desired_mutable_baseline_settings() {
-    for override_var in $mutable_baseline_override_vars; do
-        eval "desired_value=\${desired_$override_var-}"
-        if [ -n "$desired_value" ]; then
-            eval "$override_var=\$desired_value"
-        fi
-    done
+    restore_vars_from_settings_block "$reapplied_firewall_vars" "$desired_mutable_baseline_settings"
 }
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root. Please use sudo or run as root user."
+    say_err "This script must be run as root. Please use sudo or run as root user."
     exit 1
 fi
 
@@ -141,7 +449,7 @@ fi
 # Validate the existence of a user
 validate_user() {
     if ! id "$1" >/dev/null 2>&1; then
-        echo "User '$1' does not exist."
+        say_err "User '$1' does not exist."
         return 1
     fi
 }
@@ -149,7 +457,7 @@ validate_user() {
 # Validate SSH port input
 validate_port() {
     if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
-        echo "Error: Invalid port number '$1'. Port must be an integer between 1 and 65535."
+        error_msg "Invalid port number '$1'. Port must be an integer between 1 and 65535."
         return 1
     fi
 }
@@ -157,7 +465,7 @@ validate_port() {
 # Validate network interface
 validate_interface() {
     if ! ifconfig "$1" >/dev/null 2>&1; then
-        echo "Error: Invalid interface '$1'. Please enter a valid network interface."
+        error_msg "Invalid interface '$1'. Please enter a valid network interface."
         return 1
     fi
 }
@@ -165,7 +473,7 @@ validate_interface() {
 # Validate password expiration input
 validate_password_expiration() {
     if ! [ "$1" -eq "$1" ] 2>/dev/null || [ "$1" -le 0 ]; then
-        echo "Error: Invalid password expiration '$1'. Days must be a positive integer."
+        error_msg "Invalid password expiration '$1'. Days must be a positive integer."
         return 1
     fi
 }
@@ -174,7 +482,7 @@ validate_yes_no() {
     value="$1"
     option_name="$2"
     if [ "$value" != "yes" ] && [ "$value" != "no" ]; then
-        echo "Invalid value for $option_name: $value (use yes or no)."
+        say_err "Invalid value for $option_name: $value (use yes or no)."
         return 1
     fi
 }
@@ -187,7 +495,7 @@ validate_optional_yes_no() {
 
 validate_optional_interface() {
     value="$1"
-    [ -z "$value" ] || [ "$value" = "none" ] || validate_interface "$value"
+    [ -z "$value" ] || value_is_none "$value" || validate_interface "$value"
 }
 
 user_in_group() {
@@ -228,26 +536,201 @@ read_simple_assignment_value() {
     ' "$target_file"
 }
 
-file_has_exact_line() {
+assignment_settings_block_from_file() {
     target_file="$1"
-    expected_line="$2"
-    [ -f "$target_file" ] && grep -qxF "$expected_line" "$target_file"
+
+    [ -f "$target_file" ] || return 1
+
+    awk '
+        index($0, "=") {
+            key = substr($0, 1, index($0, "=") - 1)
+            value = substr($0, index($0, "=") + 1)
+            sub(/^"/, "", value)
+            sub(/"$/, "", value)
+            print key "=" value
+        }
+    ' "$target_file"
+}
+
+text_has_all_exact_lines() {
+    text_block="$1"
+    expected_lines="$2"
+
+    printf '%s\n' "$text_block" |
+        awk -v expected_lines="$expected_lines" '
+            BEGIN {
+                expected_count = split(expected_lines, expected, "\n")
+                for (i = 1; i <= expected_count; i++) {
+                    if (expected[i] != "") {
+                        required[expected[i]] = 1
+                    }
+                }
+            }
+            {
+                seen[$0] = 1
+            }
+            END {
+                for (line in required) {
+                    if (!(line in seen)) {
+                        exit 1
+                    }
+                }
+            }
+        '
 }
 
 file_has_all_exact_lines() {
     target_file="$1"
     expected_lines="$2"
+    [ -f "$target_file" ] || return 1
+    text_has_all_exact_lines "$(cat "$target_file")" "$expected_lines"
+}
+
+settings_block_value() {
+    settings_block="$1"
+    target_key="$2"
+    printf '%s\n' "$settings_block" |
+        awk -F '=' -v target_key="$target_key" '
+            $1 == target_key {
+                value = substr($0, index($0, "=") + 1)
+                print value
+                found = 1
+                exit
+            }
+            END { exit(found ? 0 : 1) }
+        '
+}
+
+settings_block_for_vars() {
+    var_list="$1"
+    settings_block_for_vars_with_value_fn "$var_list" "get_var_value"
+}
+
+settings_block_for_vars_with_value_fn() {
+    var_list="$1"
+    value_fn="$2"
+    old_ifs=$IFS
+    IFS=' '
+    for var_name in $var_list; do
+        [ -n "$var_name" ] || continue
+        var_value=$("$value_fn" "$var_name")
+        printf '%s=%s\n' "$var_name" "${var_value-}"
+    done
+    IFS=$old_ifs
+}
+
+each_settings_block_entry() {
+    settings_block="$1"
+    callback_fn="$2"
     old_ifs=$IFS
     IFS='
 '
-    for expected_line in $expected_lines; do
-        [ -n "$expected_line" ] || continue
-        file_has_exact_line "$target_file" "$expected_line" || {
-            IFS=$old_ifs
-            return 1
-        }
+    for setting in $settings_block; do
+        [ -n "$setting" ] || continue
+        "$callback_fn" "${setting%%=*}" "${setting#*=}"
     done
     IFS=$old_ifs
+}
+
+quoted_setting_line() {
+    key="$1"
+    value="$2"
+    escaped_value=$(printf '%s' "$value" | sed 's/["\\]/\\&/g')
+    printf '%s="%s"\n' "$key" "$escaped_value"
+}
+
+emit_overridden_settings_entry() {
+    setting_key="$1"
+    setting_value="$2"
+    override_value=$(settings_block_value "$current_settings_overrides" "$setting_key" 2>/dev/null || printf '%s' "$setting_value")
+    printf '%s=%s\n' "$setting_key" "$override_value"
+}
+
+emit_quoted_settings_entry() {
+    setting_key="$1"
+    setting_value="$2"
+    quoted_setting_line "$setting_key" "$setting_value"
+}
+
+apply_sysrc_settings_entry() {
+    setting_key="$1"
+    setting_value="$2"
+    sysrc "$(quoted_setting_line "$setting_key" "$setting_value")"
+}
+
+settings_block_with_overrides() {
+    base_block="$1"
+    current_settings_overrides="$2"
+    each_settings_block_entry "$base_block" "emit_overridden_settings_entry"
+}
+
+render_quoted_settings_block() {
+    settings_block="$1"
+    each_settings_block_entry "$settings_block" "emit_quoted_settings_entry"
+}
+
+settings_blocks_match() {
+    expected_block="$1"
+    actual_block="$2"
+
+    awk -v expected_block="$expected_block" -v actual_block="$actual_block" '
+        BEGIN {
+            expected_count = split(expected_block, expected_lines, "\n")
+            for (i = 1; i <= expected_count; i++) {
+                if (expected_lines[i] == "") {
+                    continue
+                }
+                split(expected_lines[i], expected_parts, "=")
+                expected_key = expected_parts[1]
+                expected_value = substr(expected_lines[i], index(expected_lines[i], "=") + 1)
+                expected_map[expected_key] = expected_value
+            }
+
+            actual_count = split(actual_block, actual_lines, "\n")
+            for (i = 1; i <= actual_count; i++) {
+                if (actual_lines[i] == "") {
+                    continue
+                }
+                split(actual_lines[i], actual_parts, "=")
+                actual_key = actual_parts[1]
+                actual_value = substr(actual_lines[i], index(actual_lines[i], "=") + 1)
+                actual_map[actual_key] = actual_value
+            }
+
+            for (key in expected_map) {
+                if (!(key in actual_map) || actual_map[key] != expected_map[key]) {
+                    exit 1
+                }
+            }
+        }
+    ' </dev/null
+}
+
+restore_vars_from_settings_block() {
+    var_list="$1"
+    settings_block="$2"
+    only_if_missing="${3:-no}"
+    wanted_vars=" $var_list "
+
+    each_settings_block_entry "$settings_block" "restore_settings_block_entry"
+}
+
+restore_settings_block_entry() {
+    target_var="$1"
+    target_value="$2"
+
+    case "$wanted_vars" in
+    *" $target_var "*) ;;
+    *)
+        return 0
+        ;;
+    esac
+
+    if [ "$only_if_missing" = "yes" ] && [ -n "$(get_var_value "$target_var")" ]; then
+        return 0
+    fi
+
+    set_var_value "$target_var" "$target_value"
 }
 
 sudo_policy_is_valid() {
@@ -257,7 +740,13 @@ sudo_policy_is_valid() {
 }
 
 wheel_sudo_is_active() {
-    grep -qE "$wheel_sudo_regex" /usr/local/etc/sudoers ||
+    awk '
+        /^%wheel[[:blank:]]+ALL=\(ALL(:ALL)?\)[[:blank:]]+(NOPASSWD:[[:blank:]]+)?ALL$/ {
+            found = 1
+            exit
+        }
+        END { exit(found ? 0 : 1) }
+    ' /usr/local/etc/sudoers ||
         { [ -f /usr/local/etc/sudoers.d/wheel ] && [ ! -f /usr/local/etc/sudoers.d/wheel.disabled ]; }
 }
 
@@ -267,24 +756,10 @@ non_root_wheel_members_present() {
 
 load_live_managed_firewall_context() {
     [ -f "$managed_ipfw_rules_file" ] || return 0
+    managed_firewall_settings=$(assignment_settings_block_from_file "$managed_ipfw_rules_file" 2>/dev/null || printf '')
+    restore_vars_from_settings_block "$loaded_firewall_vars" "$managed_firewall_settings" "yes"
 
-    for managed_var in $managed_firewall_context_vars; do
-        eval "managed_value=\${$managed_var-}"
-        if [ -z "$managed_value" ]; then
-            managed_value=$(read_simple_assignment_value "$managed_ipfw_rules_file" "$managed_var" 2>/dev/null || printf '')
-            if [ -n "$managed_value" ]; then
-                eval "$managed_var=\$managed_value"
-            fi
-        fi
-    done
-
-    if [ -z "${install_suricata-}" ]; then
-        if [ -n "${suricata_port-}" ] && [ "${suricata_port-}" != "none" ]; then
-            install_suricata="yes"
-        else
-            install_suricata="no"
-        fi
-    fi
+    resolve_install_suricata_default
 }
 
 ###############################################################################
@@ -308,17 +783,7 @@ effective_sshd_lacks_line() {
 effective_sshd_matches_lines() {
     sshd_effective="$1"
     expected_lines="$2"
-    old_ifs=$IFS
-    IFS='
-'
-    for expected_line in $expected_lines; do
-        [ -n "$expected_line" ] || continue
-        effective_sshd_has_line "$sshd_effective" "$expected_line" || {
-            IFS=$old_ifs
-            return 1
-        }
-    done
-    IFS=$old_ifs
+    text_has_all_exact_lines "$sshd_effective" "$expected_lines"
 }
 
 normalize_csv_set() {
@@ -341,11 +806,81 @@ compose_normalized_port_set() {
     extra_port="${2:-}"
 
     ports_csv="$primary_port"
-    if [ -n "$extra_port" ] && [ "$extra_port" != "none" ] && [ "$extra_port" != "$primary_port" ]; then
+    if value_is_configured "$extra_port" && [ "$extra_port" != "$primary_port" ]; then
         ports_csv="$extra_port,$primary_port"
     fi
 
     normalize_csv_set "$ports_csv"
+}
+
+csv_items_lines() {
+    csv_value="$1"
+
+    [ -n "$csv_value" ] || return 0
+
+    printf '%s\n' "$csv_value" |
+        tr ',' '\n' |
+        sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d'
+}
+
+group_member_lines() {
+    group_name="$1"
+    getent group "$group_name" | cut -d ':' -f 4 | tr ',' '\n' | sed '/^$/d'
+}
+
+append_line_block() {
+    line_block="$1"
+    new_line="$2"
+    if [ -n "$line_block" ]; then
+        printf '%s\n%s\n' "$line_block" "$new_line"
+    else
+        printf '%s\n' "$new_line"
+    fi
+}
+
+normalize_line_block_csv() {
+    line_block="$1"
+    printf '%s\n' "$line_block" | sed '/^$/d' | awk '!seen[$0]++' | paste -sd, -
+}
+
+update_group_membership() {
+    group_name="$1"
+    action="$2"
+    user_list="$3"
+    success_message="$4"
+    empty_message="$5"
+    changed_users=""
+
+    for member_user in $user_list; do
+        [ -n "$member_user" ] || continue
+        case "$action" in
+        add)
+            pw groupmod "$group_name" -m "$member_user"
+            ;;
+        remove)
+            pw groupmod "$group_name" -d "$member_user"
+            ;;
+        *)
+            error_msg "Unknown group membership action '$action'."
+            return 1
+            ;;
+        esac
+        changed_users=$(append_line_block "$changed_users" "$member_user")
+    done
+
+    if [ -n "$changed_users" ]; then
+        say "$success_message $(normalize_line_block_csv "$changed_users")"
+    else
+        say "$empty_message"
+    fi
+}
+
+load_effective_sshd() {
+    if ! sshd -t -f "$sshd_config_file" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    sshd -T -f "$sshd_config_file" 2>/dev/null
 }
 
 effective_sshd_ports_csv() {
@@ -386,25 +921,14 @@ effective_sshd_allowusers_includes() {
 }
 
 admin_access_error() {
-    printf 'Error: %s. Deferred admin fallback policy has not been changed.\n' "$1"
-}
-
-pending_cutover_message() {
-    stage_label="$1"
-    next_step="$2"
-    printf '%s is pending verification.\n' "$stage_label"
-    printf '%s\n' "$next_step"
+    error_msg "$1. Deferred admin fallback policy has not been changed."
 }
 
 strict_ssh_config_ready() {
     [ -n "${user-}" ] || return 1
     [ -n "${ssh_port-}" ] || return 1
 
-    if ! sshd -t -f "$sshd_config_file" >/dev/null 2>&1; then
-        return 1
-    fi
-
-    sshd_effective=$(sshd -T -f "$sshd_config_file" 2>/dev/null) || return 1
+    sshd_effective=$(load_effective_sshd) || return 1
 
     effective_sshd_matches_lines "$sshd_effective" "$strict_ssh_effective_policy_lines" &&
         effective_sshd_ports_match "$sshd_effective" "$ssh_port" &&
@@ -414,11 +938,7 @@ strict_ssh_config_ready() {
 transitional_ssh_config_ready() {
     [ -n "${user-}" ] || return 1
 
-    if ! sshd -t -f "$sshd_config_file" >/dev/null 2>&1; then
-        return 1
-    fi
-
-    sshd_effective=$(sshd -T -f "$sshd_config_file" 2>/dev/null) || return 1
+    sshd_effective=$(load_effective_sshd) || return 1
 
     effective_sshd_has_line "$sshd_effective" "passwordauthentication yes" &&
         effective_sshd_has_line "$sshd_effective" "kbdinteractiveauthentication yes" &&
@@ -435,11 +955,7 @@ pending_port_transition_sshd_matches_state() {
     [ -n "${user-}" ] || return 1
     [ -n "${ssh_port-}" ] || return 1
 
-    if ! sshd -t -f "$sshd_config_file" >/dev/null 2>&1; then
-        return 1
-    fi
-
-    sshd_effective=$(sshd -T -f "$sshd_config_file" 2>/dev/null) || return 1
+    sshd_effective=$(load_effective_sshd) || return 1
 
     case "${cutover_stage:-}" in
     pending_port_transition_reboot)
@@ -483,38 +999,50 @@ sudo_admin_path_matches_state() {
         user_in_group "$user" "sudo"
 }
 
-cutover_policy_requires_fallback_removal() {
-    set_default_if_empty "disable_wheel" "no"
-    set_default_if_empty "remove_wheel_members" "no"
-
-    [ "$disable_wheel" = "yes" ] || [ "$remove_wheel_members" = "yes" ]
+option_enabled() {
+    option_var="$1"
+    set_default_if_empty "$option_var" "no"
+    value_is_yes "$(get_var_value "$option_var")"
 }
 
-resolved_wheel_sudo_finalized_state() {
-    set_default_if_empty "disable_wheel" "no"
-    set_default_if_empty "wheel_sudo_finalized" "no"
-
-    if [ "$disable_wheel" != "yes" ] || [ "$wheel_sudo_finalized" = "yes" ]; then
-        printf '%s\n' "yes"
+freebsd_bool_value() {
+    if value_is_yes "${1:-no}"; then
+        printf '%s\n' "$freebsd_true"
     else
-        printf '%s\n' "no"
+        printf '%s\n' "$freebsd_false"
     fi
 }
 
-resolved_wheel_membership_finalized_state() {
-    set_default_if_empty "remove_wheel_members" "no"
-    set_default_if_empty "wheel_membership_finalized" "no"
+freebsd_true_setting() {
+    quoted_setting_line "$1" "$freebsd_true"
+}
 
-    if [ "$remove_wheel_members" != "yes" ] || [ "$wheel_membership_finalized" = "yes" ]; then
-        printf '%s\n' "yes"
-    else
-        printf '%s\n' "no"
-    fi
+resolved_option_enabled() {
+    requested_var="$1"
+    finalized_var="$2"
+    value_is_yes "$(resolved_finalized_state "$requested_var" "$finalized_var")"
+}
+
+resolved_finalized_state() {
+    requested_var="$1"
+    finalized_var="$2"
+    set_default_if_empty "$finalized_var" "no"
+    requested_value=$(option_enabled "$requested_var" && printf 'yes' || printf 'no')
+    resolved_wheel_policy_finalized_state "$requested_value" "$(get_var_value "$finalized_var")"
 }
 
 wheel_policy_fully_finalized() {
-    [ "$(resolved_wheel_sudo_finalized_state)" = "yes" ] &&
-        [ "$(resolved_wheel_membership_finalized_state)" = "yes" ]
+    resolved_option_enabled "disable_wheel" "wheel_sudo_finalized" &&
+        resolved_option_enabled "remove_wheel_members" "wheel_membership_finalized"
+}
+
+suricata_requested() {
+    resolve_install_suricata_default
+    option_enabled "install_suricata"
+}
+
+suricata_ports_defined() {
+    value_is_configured "${suricata_port:-none}"
 }
 
 record_committed_cutover_state() {
@@ -527,23 +1055,15 @@ record_committed_cutover_state() {
         wheel_membership_finalized="yes"
         ;;
     pending)
-        if [ "${disable_wheel:-no}" = "yes" ]; then
-            wheel_sudo_finalized="no"
-        else
-            wheel_sudo_finalized="yes"
-        fi
-        if [ "${remove_wheel_members:-no}" = "yes" ]; then
-            wheel_membership_finalized="no"
-        else
-            wheel_membership_finalized="yes"
-        fi
+        wheel_sudo_finalized=$(option_enabled "disable_wheel" && printf 'no' || printf 'yes')
+        wheel_membership_finalized=$(option_enabled "remove_wheel_members" && printf 'no' || printf 'yes')
         ;;
     current)
-        wheel_sudo_finalized=$(resolved_wheel_sudo_finalized_state)
-        wheel_membership_finalized=$(resolved_wheel_membership_finalized_state)
+        wheel_sudo_finalized=$(resolved_finalized_state "disable_wheel" "wheel_sudo_finalized")
+        wheel_membership_finalized=$(resolved_finalized_state "remove_wheel_members" "wheel_membership_finalized")
         ;;
     *)
-        echo "Error: Unknown wheel policy state '$wheel_policy_state'."
+        error_msg "Unknown wheel policy state '$wheel_policy_state'."
         return 1
         ;;
     esac
@@ -552,14 +1072,11 @@ record_committed_cutover_state() {
 }
 
 wheel_sudo_matches_saved_policy() {
-    set_default_if_empty "disable_wheel" "no"
-    set_default_if_empty "wheel_sudo_finalized" "no"
-
-    if [ "$disable_wheel" != "yes" ]; then
+    if ! option_enabled "disable_wheel"; then
         return 0
     fi
 
-    if [ "$wheel_sudo_finalized" = "yes" ]; then
+    if resolved_option_enabled "disable_wheel" "wheel_sudo_finalized"; then
         if wheel_sudo_is_active; then
             return 1
         fi
@@ -570,14 +1087,11 @@ wheel_sudo_matches_saved_policy() {
 }
 
 wheel_membership_matches_saved_policy() {
-    set_default_if_empty "remove_wheel_members" "no"
-    set_default_if_empty "wheel_membership_finalized" "no"
-
-    if [ "$remove_wheel_members" != "yes" ]; then
+    if ! option_enabled "remove_wheel_members"; then
         return 0
     fi
 
-    if [ "$wheel_membership_finalized" = "yes" ]; then
+    if resolved_option_enabled "remove_wheel_members" "wheel_membership_finalized"; then
         if non_root_wheel_members_present; then
             return 1
         fi
@@ -587,52 +1101,33 @@ wheel_membership_matches_saved_policy() {
     non_root_wheel_members_present
 }
 
-firewall_loader_matches_state() {
-    expected_loader_settings=$(build_firewall_loader_settings)
-    file_has_all_exact_lines "$loader_conf_file" "$expected_loader_settings"
-}
-
-firewall_rc_conf_matches_state() {
-    file_has_all_exact_lines "$rc_conf_file" "$managed_firewall_rc_conf_lines"
-}
-
 firewall_rules_match_state() {
     [ -f "$managed_ipfw_rules_file" ] || return 1
 
-    for required_var in $managed_firewall_rules_state_vars; do
-        expected_value=$(eval "printf '%s' \"\${$required_var-}\"")
-        actual_value=$(read_simple_assignment_value "$managed_ipfw_rules_file" "$required_var" 2>/dev/null || printf '')
-        [ "$actual_value" = "$expected_value" ] || return 1
-    done
-
-    actual_value=$(read_simple_assignment_value "$managed_ipfw_rules_file" "ssh_port" 2>/dev/null || printf '')
-    [ "$actual_value" = "$ssh_port" ]
+    expected_settings=$(settings_block_for_vars "$validated_firewall_vars")
+    actual_settings=$(assignment_settings_block_from_file "$managed_ipfw_rules_file" 2>/dev/null || printf '')
+    settings_blocks_match "$expected_settings" "$actual_settings"
 }
 
 firewall_boot_state_matches_state() {
-    firewall_loader_matches_state &&
-        firewall_rc_conf_matches_state &&
+    file_has_all_exact_lines "$loader_conf_file" "$(build_firewall_loader_settings)" &&
+        file_has_all_exact_lines "$rc_conf_file" "$(render_quoted_settings_block "$managed_firewall_rc_conf_settings")" &&
         firewall_rules_match_state &&
         suricata_config_matches_state
 }
 
-managed_ssh_ports_for_current_stage() {
-    if [ "${cutover_stage:-}" = "pending_port_transition_reboot" ] &&
-        [ -n "${port_transition_old_port:-}" ]; then
-        compose_normalized_port_set "$ssh_port" "$port_transition_old_port"
-        return 0
-    fi
-
-    if [ "${cutover_stage:-}" = "pending_port_commit_reboot" ]; then
+staged_live_ssh_ports() {
+    case "${cutover_stage:-}" in
+    pending_transitional_verify)
+        printf '%s\n' "${transitional_ssh_port:-}"
+        ;;
+    pending_port_transition_reboot)
+        compose_normalized_port_set "$ssh_port" "${port_transition_old_port:-}"
+        ;;
+    *)
         compose_normalized_port_set "$ssh_port"
-        return 0
-    fi
-
-    compose_normalized_port_set "$ssh_port"
-}
-
-managed_ssh_ports_for_generated_state() {
-    compose_normalized_port_set "$ssh_port" "${port_transition_old_port:-}"
+        ;;
+    esac
 }
 
 suricata_ssh_ports_value() {
@@ -668,18 +1163,18 @@ suricata_ssh_rule_ports_value() {
     esac
 }
 
-suricata_managed_ssh_rule() {
+managed_suricata_ssh_rule() {
     ssh_ports_csv="$1"
     suricata_rule_ports=$(suricata_ssh_rule_ports_value "$ssh_ports_csv")
     printf '%s\n' "alert tcp any any -> any $suricata_rule_ports (msg:\"Managed SSH connection on staged ports $suricata_rule_ports\"; sid:1000001; rev:2;)"
 }
 
 suricata_config_matches_state() {
-    ssh_ports_csv=$(managed_ssh_ports_for_current_stage)
+    ssh_ports_csv=$(staged_live_ssh_ports)
     expected_yaml_ports=$(suricata_ssh_ports_value "$ssh_ports_csv")
     expected_rule_ports=$(normalize_csv_set "$ssh_ports_csv")
 
-    if [ "${install_suricata:-no}" != "yes" ] || [ "${suricata_port:-none}" = "none" ]; then
+    if ! suricata_requested || ! suricata_ports_defined; then
         return 0
     fi
 
@@ -720,12 +1215,12 @@ runtime_has_managed_ssh_rule() {
 
     case "$address_family" in
     ipv4)
-        [ -n "${ssh_ipv4:-}" ] && [ "${ssh_ipv4:-}" != "none" ] || return 0
+        value_is_configured "${ssh_ipv4:-}" || return 0
         expected_source="$ssh_ipv4"
         expected_destination="me"
         ;;
     ipv6)
-        [ -n "${ssh_ipv6:-}" ] && [ "${ssh_ipv6:-}" != "none" ] || return 0
+        value_is_configured "${ssh_ipv6:-}" || return 0
         expected_source="$ssh_ipv6"
         expected_destination="me6"
         ;;
@@ -769,7 +1264,7 @@ EOF
 runtime_has_managed_suricata_divert_rule() {
     runtime_rules="$1"
 
-    if [ "${install_suricata:-no}" != "yes" ] || [ "${suricata_port:-none}" = "none" ] || [ "${nat_if:-none}" = "none" ]; then
+    if ! suricata_requested || ! suricata_ports_defined || ! value_is_configured "${nat_if:-none}"; then
         return 0
     fi
 
@@ -780,7 +1275,7 @@ runtime_has_managed_suricata_divert_rule() {
 runtime_has_managed_nat_rule() {
     runtime_rules="$1"
 
-    if [ "${nat_if:-none}" = "none" ]; then
+    if ! value_is_configured "${nat_if:-none}"; then
         return 0
     fi
 
@@ -806,7 +1301,7 @@ firewall_runtime_state_class() {
         return 0
     fi
 
-    expected_ssh_ports=$(managed_ssh_ports_for_current_stage)
+    expected_ssh_ports=$(staged_live_ssh_ports)
     if ! runtime_has_managed_ssh_rule "$runtime_rules" ipv4 "$expected_ssh_ports" ||
         ! runtime_has_managed_ssh_rule "$runtime_rules" ipv6 "$expected_ssh_ports"; then
         printf '%s\n' "misaligned"
@@ -818,14 +1313,14 @@ firewall_runtime_state_class() {
         return 0
     fi
 
-    if [ "${nat_if:-none}" != "none" ]; then
+    if value_is_configured "${nat_if:-none}"; then
         if ! runtime_has_managed_nat_rule "$runtime_rules" || ! ipfw nat show config >/dev/null 2>&1; then
             printf '%s\n' "misaligned"
             return 0
         fi
     fi
 
-    if [ "${install_suricata:-no}" = "yes" ] && [ "${suricata_port:-none}" != "none" ]; then
+    if suricata_requested && suricata_ports_defined; then
         if ! runtime_has_managed_suricata_divert_rule "$runtime_rules"; then
             printf '%s\n' "misaligned"
             return 0
@@ -836,39 +1331,23 @@ firewall_runtime_state_class() {
 }
 
 warn_if_firewall_runtime_absent() {
-    if [ "${current_firewall_runtime_state:-}" = "absent" ]; then
-        echo "Warning: Managed firewall boot state is committed, but runtime ipfw is currently inactive. A future reboot or firewall activation will enforce the managed rules."
+    runtime_state="${1:-$(firewall_runtime_state_class 2>/dev/null || printf '')}"
+    if [ "$runtime_state" = "absent" ]; then
+        warn_msg "Managed firewall boot state is committed, but runtime ipfw is currently inactive. A future reboot or firewall activation will enforce the managed rules."
     fi
 }
 
 validate_pending_port_transition_alignment() {
     active_boot_marker=$(current_boot_marker)
     if [ -n "${cutover_boot_marker:-}" ] && [ -n "$active_boot_marker" ] && [ "$active_boot_marker" = "$cutover_boot_marker" ]; then
-        echo "Error: The host has not rebooted since the pending SSH port transition state was written. Reboot and verify login on the new SSH port before advancing this stage."
+        error_msg "The host has not rebooted since the pending SSH port transition state was written. Reboot and verify login on the new SSH port before advancing this stage."
         return 1
     fi
-    validate_stage_alignment_common \
-        "saved SSH port transition state" \
-        "pending_port_transition_sshd_matches_state" \
-        "The live sshd configuration no longer matches the pending SSH port transition state." \
-        "The managed SSH public key or Google Authenticator path no longer matches the pending SSH port transition state." \
-        "The managed sudo path no longer matches the pending SSH port transition state." \
-        "The saved %wheel sudo policy no longer matches the live host during the SSH port transition." \
-        "The saved wheel membership policy no longer matches the live host during the SSH port transition." \
-        "The managed firewall boot state no longer matches the pending SSH port transition." \
-        "The live ipfw runtime state could not be classified during the SSH port transition." \
-        "The live ipfw runtime state no longer matches the pending SSH port transition."
+    validate_stage_alignment_common "pending_port_transition" "pending_port_transition_sshd_matches_state" "yes"
 }
 
 validate_pending_transitional_alignment() {
-    validate_stage_alignment_common \
-        "pending transitional SSH verification state" \
-        "transitional_ssh_config_ready" \
-        "The live sshd configuration no longer matches the pending transitional SSH verification state." \
-        "The managed SSH public key or Google Authenticator path no longer matches the pending transitional SSH verification state." \
-        "The managed sudo path no longer matches the pending transitional SSH verification state." \
-        "The saved %wheel sudo policy no longer matches the live host during pending transitional verification." \
-        "The saved wheel membership policy no longer matches the live host during pending transitional verification."
+    validate_stage_alignment_common "pending_transitional" "transitional_ssh_config_ready"
 }
 
 managed_state_is_aligned_with_live_state() {
@@ -887,8 +1366,8 @@ managed_state_is_aligned_with_live_state() {
         return 1
     }
 
-    sudo_admin_path_matches_state || {
-        cutover_alignment_error="managed sudo policy or sudo group membership is no longer aligned"
+    managed_admin_path_matches_state || {
+        cutover_alignment_error="managed admin path is no longer aligned"
         return 1
     }
 
@@ -907,11 +1386,11 @@ managed_state_is_aligned_with_live_state() {
         return 1
     fi
 
-    current_firewall_runtime_state=$(firewall_runtime_state_class) || {
+    runtime_state=$(firewall_runtime_state_class) || {
         cutover_alignment_error="managed firewall runtime state could not be classified"
         return 1
     }
-    if [ "$current_firewall_runtime_state" = "misaligned" ]; then
+    if [ "$runtime_state" = "misaligned" ]; then
         cutover_alignment_error="managed firewall runtime state is loaded but no longer aligned"
         return 1
     fi
@@ -923,60 +1402,140 @@ managed_ssh_auth_assets_ready() {
         [ -f "$ga_config" ] && [ -s "$ga_config" ]
 }
 
+stage_identity_context_label() {
+    case "$1" in
+    pending_port_transition)
+        printf '%s\n' "saved SSH port transition state"
+        ;;
+    pending_transitional)
+        printf '%s\n' "pending transitional SSH verification state"
+        ;;
+    pending_strict)
+        printf '%s\n' "pending strict SSH verification state"
+        ;;
+    *)
+        error_msg "Unknown stage identity context '$1'."
+        return 1
+        ;;
+    esac
+}
+
+stage_alignment_error_message() {
+    stage_key="$1"
+    subject="$2"
+
+    case "$stage_key:$subject" in
+    pending_port_transition:ssh)
+        printf '%s\n' "The live sshd configuration no longer matches the pending SSH port transition state."
+        ;;
+    pending_port_transition:auth)
+        printf '%s\n' "The managed SSH public key or Google Authenticator path no longer matches the pending SSH port transition state."
+        ;;
+    pending_port_transition:sudo)
+        printf '%s\n' "The managed sudo path no longer matches the pending SSH port transition state."
+        ;;
+    pending_port_transition:wheel_sudo)
+        printf '%s\n' "The saved %wheel sudo policy no longer matches the live host during the SSH port transition."
+        ;;
+    pending_port_transition:wheel_members)
+        printf '%s\n' "The saved wheel membership policy no longer matches the live host during the SSH port transition."
+        ;;
+    pending_port_transition:firewall_boot)
+        printf '%s\n' "The managed firewall boot state no longer matches the pending SSH port transition."
+        ;;
+    pending_port_transition:firewall_runtime_classify)
+        printf '%s\n' "The live ipfw runtime state could not be classified during the SSH port transition."
+        ;;
+    pending_port_transition:firewall_runtime_misaligned)
+        printf '%s\n' "The live ipfw runtime state no longer matches the pending SSH port transition."
+        ;;
+    pending_transitional:ssh)
+        printf '%s\n' "The live sshd configuration no longer matches the pending transitional SSH verification state."
+        ;;
+    pending_transitional:auth)
+        printf '%s\n' "The managed SSH public key or Google Authenticator path no longer matches the pending transitional SSH verification state."
+        ;;
+    pending_transitional:sudo)
+        printf '%s\n' "The managed sudo path no longer matches the pending transitional SSH verification state."
+        ;;
+    pending_transitional:wheel_sudo)
+        printf '%s\n' "The saved %wheel sudo policy no longer matches the live host during pending transitional verification."
+        ;;
+    pending_transitional:wheel_members)
+        printf '%s\n' "The saved wheel membership policy no longer matches the live host during pending transitional verification."
+        ;;
+    pending_strict:ssh | pending_strict:auth)
+        printf '%s\n' "The managed SSH public key, Google Authenticator, or strict sshd configuration no longer matches the pending strict SSH verification state."
+        ;;
+    pending_strict:sudo)
+        printf '%s\n' "The managed sudo path no longer matches the pending strict SSH verification state."
+        ;;
+    pending_strict:wheel_sudo)
+        printf '%s\n' "The saved %wheel sudo policy no longer matches the live host during pending strict verification."
+        ;;
+    pending_strict:wheel_members)
+        printf '%s\n' "The saved wheel membership policy no longer matches the live host during pending strict verification."
+        ;;
+    pending_strict:firewall_boot)
+        printf '%s\n' "The managed firewall boot state no longer matches the pending strict SSH verification state."
+        ;;
+    pending_strict:firewall_runtime_classify)
+        printf '%s\n' "The live ipfw runtime state could not be classified during pending strict SSH verification."
+        ;;
+    pending_strict:firewall_runtime_misaligned)
+        printf '%s\n' "The live ipfw runtime state no longer matches the pending strict SSH verification state."
+        ;;
+    *)
+        error_msg "Unknown stage alignment message '$stage_key:$subject'."
+        return 1
+        ;;
+    esac
+}
+
+managed_admin_path_matches_state() {
+    managed_ssh_auth_assets_ready &&
+        sudo_admin_path_matches_state
+}
+
+stage_alignment_check() {
+    stage_key="$1"
+    subject="$2"
+    shift 2
+
+    if "$@"; then
+        return 0
+    fi
+
+    error_msg "$(stage_alignment_error_message "$stage_key" "$subject")"
+    return 1
+}
+
 validate_stage_alignment_common() {
-    stage_identity_context="$1"
+    stage_key="$1"
     ssh_validator="$2"
-    ssh_error_message="$3"
-    auth_error_message="$4"
-    sudo_error_message="$5"
-    wheel_sudo_error_message="$6"
-    wheel_members_error_message="$7"
-    firewall_boot_error_message="${8:-}"
-    firewall_runtime_classify_error_message="${9:-}"
-    firewall_runtime_misaligned_error_message="${10:-}"
+    include_firewall_checks="${3:-no}"
+    stage_identity_context=$(stage_identity_context_label "$stage_key") || return 1
 
     if ! cutover_state_matches_live_identity; then
-        echo "Error: The managed user identity no longer matches the $stage_identity_context."
+        error_msg "The managed user identity no longer matches the $stage_identity_context."
         return 1
     fi
 
-    if ! "$ssh_validator"; then
-        echo "Error: $ssh_error_message"
-        return 1
-    fi
+    stage_alignment_check "$stage_key" "ssh" "$ssh_validator" || return 1
+    stage_alignment_check "$stage_key" "auth" managed_ssh_auth_assets_ready || return 1
+    stage_alignment_check "$stage_key" "sudo" sudo_admin_path_matches_state || return 1
+    stage_alignment_check "$stage_key" "wheel_sudo" wheel_sudo_matches_saved_policy || return 1
+    stage_alignment_check "$stage_key" "wheel_members" wheel_membership_matches_saved_policy || return 1
 
-    if ! managed_ssh_auth_assets_ready; then
-        echo "Error: $auth_error_message"
-        return 1
-    fi
+    if value_is_yes "$include_firewall_checks"; then
+        stage_alignment_check "$stage_key" "firewall_boot" firewall_boot_state_matches_state || return 1
 
-    if ! sudo_admin_path_matches_state; then
-        echo "Error: $sudo_error_message"
-        return 1
-    fi
-
-    if ! wheel_sudo_matches_saved_policy; then
-        echo "Error: $wheel_sudo_error_message"
-        return 1
-    fi
-
-    if ! wheel_membership_matches_saved_policy; then
-        echo "Error: $wheel_members_error_message"
-        return 1
-    fi
-
-    if [ -n "$firewall_boot_error_message" ]; then
-        if ! firewall_boot_state_matches_state; then
-            echo "Error: $firewall_boot_error_message"
-            return 1
-        fi
-
-        current_firewall_runtime_state=$(firewall_runtime_state_class) || {
-            echo "Error: $firewall_runtime_classify_error_message"
+        runtime_state=$(firewall_runtime_state_class) || {
+            error_msg "$(stage_alignment_error_message "$stage_key" "firewall_runtime_classify")"
             return 1
         }
-        if [ "$current_firewall_runtime_state" = "misaligned" ]; then
-            echo "Error: $firewall_runtime_misaligned_error_message"
+        if [ "$runtime_state" = "misaligned" ]; then
+            error_msg "$(stage_alignment_error_message "$stage_key" "firewall_runtime_misaligned")"
             return 1
         fi
     fi
@@ -984,97 +1543,94 @@ validate_stage_alignment_common() {
 
 validate_cutover_state_alignment() {
     if ! managed_state_is_aligned_with_live_state; then
-        echo "Error: Managed cutover state is stale or inconsistent with the live host (${cutover_alignment_error:-unknown mismatch}). Clear the managed cutover state and start a fresh staged cutover."
+        error_msg "Managed cutover state is stale or inconsistent with the live host (${cutover_alignment_error:-unknown mismatch}). Clear the managed cutover state and start a fresh staged cutover."
         return 1
     fi
 }
 
 validate_pending_strict_alignment() {
-    validate_stage_alignment_common \
-        "pending strict SSH verification state" \
-        "ssh_admin_path_matches_state" \
-        "The managed SSH public key, Google Authenticator, or strict sshd configuration no longer matches the pending strict SSH verification state." \
-        "The managed SSH public key, Google Authenticator, or strict sshd configuration no longer matches the pending strict SSH verification state." \
-        "The managed sudo path no longer matches the pending strict SSH verification state." \
-        "The saved %wheel sudo policy no longer matches the live host during pending strict verification." \
-        "The saved wheel membership policy no longer matches the live host during pending strict verification." \
-        "The managed firewall boot state no longer matches the pending strict SSH verification state." \
-        "The live ipfw runtime state could not be classified during pending strict SSH verification." \
-        "The live ipfw runtime state no longer matches the pending strict SSH verification state."
+    validate_stage_alignment_common "pending_strict" "ssh_admin_path_matches_state" "yes"
 }
 
-cutover_cli_conflict() {
-    managed_label="$1"
-    managed_value="$2"
-    requested_label="$3"
-    requested_value="$4"
-    resolution_message="$5"
-    echo "Error: The managed $managed_label is '$managed_value', but $requested_label requested '$requested_value'. $resolution_message"
+cutover_defining_cli_requested() {
+    [ -n "${cli_user-}" ] ||
+        [ -n "${cli_ssh_port-}" ] ||
+        [ -n "${cli_disable_wheel-}" ] ||
+        [ -n "${cli_remove_wheel_members-}" ]
 }
 
-cutover_identity_conflicts_with_cli() {
-    if [ -n "${cli_user-}" ] && [ "$cli_user" != "$user" ]; then
-        cutover_cli_conflict "SSH user" "$user" "--user" "$cli_user" "Start a fresh staged cutover after clearing the managed cutover state."
-        return 0
-    fi
+managed_cutover_cli_policy_allows_port_transition() {
+    [ "${cutover_stage:-}" = "committed_strict_ready" ] &&
+        [ -n "${cli_ssh_port-}" ] &&
+        [ "$cli_ssh_port" != "$ssh_port" ] &&
+        [ -z "${cli_user-}" ] &&
+        [ -z "${cli_disable_wheel-}" ] &&
+        [ -z "${cli_remove_wheel_members-}" ]
+}
 
-    if [ -n "${cli_ssh_port-}" ] && [ "$cli_ssh_port" != "$ssh_port" ]; then
-        cutover_cli_conflict "SSH port" "$ssh_port" "--ssh-port" "$cli_ssh_port" "Changing the SSH port requires the staged SSH port migration flow or a fresh staged cutover."
-        return 0
-    fi
+managed_cutover_cli_restart_guidance() {
+    printf '%s\n%s\n' "$managed_cutover_cli_preserve_state_message" "$managed_cutover_cli_restart_message"
+}
 
-    if [ -n "${cli_disable_wheel-}" ] && [ -n "${disable_wheel-}" ] && [ "$cli_disable_wheel" != "$disable_wheel" ]; then
-        cutover_cli_conflict "%wheel sudo policy disable_wheel" "$disable_wheel" "--disable-wheel" "$cli_disable_wheel" "Start a fresh staged cutover after clearing the managed cutover state."
-        return 0
-    fi
+reject_managed_cutover_cli() {
+    rejection_reason="$1"
 
-    if [ -n "${cli_remove_wheel_members-}" ] && [ -n "${remove_wheel_members-}" ] && [ "$cli_remove_wheel_members" != "$remove_wheel_members" ]; then
-        cutover_cli_conflict "wheel membership policy remove_wheel_members" "$remove_wheel_members" "--remove-wheel-members" "$cli_remove_wheel_members" "Start a fresh staged cutover after clearing the managed cutover state."
-        return 0
-    fi
-
+    case "$rejection_reason" in
+    pending_state)
+        error_msg "$pending_cutover_cli_resolution_message $managed_cutover_cli_preserve_state_message"
+        ;;
+    stale_state)
+        error_msg "$stale_cutover_cli_resolution_message"
+        ;;
+    committed_state)
+        if [ -n "${cli_ssh_port-}" ]; then
+            error_msg "$managed_ssh_port_transition_resolution_message $managed_cutover_cli_omit_message $(managed_cutover_cli_restart_guidance)"
+        else
+            error_msg "$managed_cutover_cli_omit_message $(managed_cutover_cli_restart_guidance)"
+        fi
+        ;;
+    *)
+        error_msg "Unknown managed cutover CLI rejection reason '$rejection_reason'."
+        ;;
+    esac
     return 1
 }
 
-validate_saved_cutover_cli_consistency() {
-    validate_port_transition_cli_consistency || return 1
-    if cutover_identity_conflicts_with_cli; then
-        return 1
+enforce_managed_cutover_cli_policy() {
+    cli_policy_context="$1"
+
+    if ! cutover_defining_cli_requested; then
+        return 0
     fi
-}
 
-snapshot_public_cutover_fields() {
-    saved_public_user="${user-}"
-    saved_public_ssh_port="${ssh_port-}"
-    saved_public_disable_wheel="${disable_wheel-}"
-    saved_public_remove_wheel_members="${remove_wheel_members-}"
-}
-
-restore_public_cutover_fields_if_missing() {
-    [ -n "${user-}" ] || user="$saved_public_user"
-    [ -n "${ssh_port-}" ] || ssh_port="$saved_public_ssh_port"
-    [ -n "${disable_wheel-}" ] || disable_wheel="$saved_public_disable_wheel"
-    [ -n "${remove_wheel_members-}" ] || remove_wheel_members="$saved_public_remove_wheel_members"
-}
-
-admin_access_is_ready() {
-    [ -n "${user-}" ] || return 1
-    validate_user "$user" >/dev/null 2>&1 || return 1
-    set_user_auth_paths "$user"
-
-    sudo_policy_is_valid &&
-        user_in_group "$user" "sudo" &&
-        [ -f "$authorized_keys" ] &&
-        [ -s "$authorized_keys" ] &&
-        [ -f "$ga_config" ] &&
-        [ -s "$ga_config" ]
+    case "$cli_policy_context" in
+    pending_state)
+        reject_managed_cutover_cli "pending_state"
+        ;;
+    stale_state)
+        reject_managed_cutover_cli "stale_state"
+        ;;
+    committed_state)
+        if managed_cutover_cli_policy_allows_port_transition; then
+            return 0
+        fi
+        reject_managed_cutover_cli "committed_state"
+        ;;
+    *)
+        error_msg "Unknown managed cutover CLI policy context '$cli_policy_context'."
+        return 1
+        ;;
+    esac
 }
 
 detect_cutover_mode() {
     cutover_mode="needs_stage_one"
 
-    if managed_state_is_aligned_with_live_state && admin_access_is_ready; then
-        if cutover_policy_requires_fallback_removal && ! wheel_policy_fully_finalized; then
+    if managed_state_is_aligned_with_live_state &&
+        [ -n "${user-}" ] &&
+        validate_user "$user" >/dev/null 2>&1 &&
+        managed_admin_path_matches_state; then
+        if { option_enabled "disable_wheel" || option_enabled "remove_wheel_members"; } && ! wheel_policy_fully_finalized; then
             cutover_mode="strict_ready_for_finalize"
         else
             cutover_mode="fully_hardened"
@@ -1120,19 +1676,24 @@ normalize_ssh_ip_list() {
 
     case "$family" in
     ipv4)
-        allowed_chars='0-9.,'
+        allowed_pattern='^[0-9.,]+$'
         ;;
     ipv6)
-        allowed_chars='0-9A-Fa-f:.,'
+        allowed_pattern='^[0-9A-Fa-f:.,]+$'
         ;;
     *)
-        echo "Error: Unknown IP list family '$family'." >&2
+        error_msg "Unknown IP list family '$family'."
         return 1
         ;;
     esac
 
-    cleaned=$(printf "%s" "$value" |
-        sed "s/[[:space:]]//g; s/[^${allowed_chars}]//g; s/,,*/,/g; s/^,//; s/,\$//")
+    compact_value=$(printf "%s" "$value" | tr -d '[:space:]')
+    [ -n "$compact_value" ] || return 1
+    if ! printf '%s\n' "$compact_value" | grep -Eq "$allowed_pattern"; then
+        return 1
+    fi
+
+    cleaned=$(printf "%s" "$compact_value" | sed "s/,,*/,/g; s/^,//; s/,\$//")
     [ -n "$cleaned" ] || return 1
     printf "%s\n" "$cleaned"
 }
@@ -1143,20 +1704,16 @@ prompt_yes_no_default() {
     default_value="$3"
     option_name="$4"
 
-    eval "current=\${$var_name-}"
+    current=$(get_var_value "$var_name")
     if [ -z "$current" ]; then
-        echo "$prompt_text"
+        say "$prompt_text"
         printf "Enter your choice (default: %s): " "$default_value"
         read -r current
         current="${current:-$default_value}"
-        eval "$var_name=\$current"
+        set_var_value "$var_name" "$current"
     fi
     validate_yes_no "$current" "$option_name"
 }
-
-###############################################################################
-# File, Template, And State Persistence Helpers
-###############################################################################
 
 prompt_optional_interface() {
     var_name="$1"
@@ -1165,23 +1722,27 @@ prompt_optional_interface() {
     provided_label="$4"
     disable_var="${5:-}"
 
-    eval "current=\${$var_name-}"
+    current=$(get_var_value "$var_name")
     if [ -z "$current" ]; then
-        echo "$prompt_text"
+        say "$prompt_text"
         printf "Enter the %s (default: none): " "$prompt_label"
         read -r current
         current="${current:-none}"
-        eval "$var_name=\$current"
-        if [ "$current" != "none" ]; then
+        set_var_value "$var_name" "$current"
+        if ! value_is_none "$current"; then
             validate_interface "$current"
         elif [ -n "$disable_var" ]; then
-            eval "$disable_var=no"
+            set_var_value "$disable_var" "no"
         fi
     else
-        echo "Using provided $provided_label: $current"
+        say "Using provided $provided_label: $current"
         validate_optional_interface "$current"
     fi
 }
+
+###############################################################################
+# File, Template, And State Persistence Helpers
+###############################################################################
 
 make_secure_tmp() {
     tmp_dir="${1:-/var/tmp}"
@@ -1189,7 +1750,7 @@ make_secure_tmp() {
     umask 077
     tmp_file=$(mktemp "$tmp_dir/securebsd.XXXXXX")
     umask "$old_umask"
-    echo "$tmp_file"
+    printf '%s\n' "$tmp_file"
 }
 
 atomic_replace() {
@@ -1200,9 +1761,9 @@ atomic_replace() {
     orig_group=""
 
     if [ -e "$target" ]; then
-        orig_mode=$(stat -f %Lp "$target" 2>/dev/null || echo "")
-        orig_owner=$(stat -f %u "$target" 2>/dev/null || echo "")
-        orig_group=$(stat -f %g "$target" 2>/dev/null || echo "")
+        orig_mode=$(stat -f %Lp "$target" 2>/dev/null || printf '')
+        orig_owner=$(stat -f %u "$target" 2>/dev/null || printf '')
+        orig_group=$(stat -f %g "$target" 2>/dev/null || printf '')
     fi
 
     mv "$tmp_file" "$target"
@@ -1220,12 +1781,12 @@ atomic_sed_replace() {
     shift
     tmp_file=$(make_secure_tmp "$(dirname "$target")")
     if ! sed "$@" "$target" >"$tmp_file"; then
-        echo "Error: Failed to update $target."
+        error_msg "Failed to update $target."
         rm -f "$tmp_file"
         return 1
     fi
     if [ ! -s "$tmp_file" ]; then
-        echo "Error: Processing $target failed."
+        error_msg "Processing $target failed."
         rm -f "$tmp_file"
         return 1
     fi
@@ -1246,18 +1807,18 @@ run_awk_template() {
     awk_program=$(template_path "$template_rel")
 
     if [ ! -f "$awk_program" ]; then
-        echo "Error: AWK template not found: $awk_program"
+        error_msg "AWK template not found: $awk_program"
         rm -f "$tmp_file"
         return 1
     fi
 
     if ! awk "$@" -f "$awk_program" "$src" >"$tmp_file"; then
-        echo "Error: Failed to update $error_label."
+        error_msg "Failed to update $error_label."
         rm -f "$tmp_file"
         return 1
     fi
     if [ ! -s "$tmp_file" ]; then
-        echo "Error: Processing $error_label failed."
+        error_msg "Processing $error_label failed."
         rm -f "$tmp_file"
         return 1
     fi
@@ -1267,7 +1828,7 @@ write_temp_content() {
     content="$1"
     tmp_file=$(make_secure_tmp)
     if ! printf "%s" "$content" >"$tmp_file"; then
-        echo "Error: Failed to write temporary content file."
+        error_msg "Failed to write temporary content file."
         rm -f "$tmp_file"
         return 1
     fi
@@ -1276,6 +1837,22 @@ write_temp_content() {
 
 current_boot_marker() {
     sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*sec = \([0-9][0-9]*\).*/\1/p'
+}
+
+stage_owned_cutover_state_value() {
+    state_field="$1"
+
+    case "$cutover_stage:$state_field" in
+    pending_transitional_verify:transitional_ssh_port)
+        printf '%s\n' "${transitional_ssh_port:-}"
+        ;;
+    pending_port_transition_reboot:port_transition_old_port | pending_port_commit_reboot:port_transition_old_port)
+        printf '%s\n' "${port_transition_old_port:-}"
+        ;;
+    *)
+        printf '\n'
+        ;;
+    esac
 }
 
 load_cutover_state() {
@@ -1289,35 +1866,20 @@ write_cutover_state() {
     cutover_stage="$1"
     wheel_sudo_finalized_state="${2:-${wheel_sudo_finalized:-}}"
     wheel_membership_finalized_state="${3:-${wheel_membership_finalized:-}}"
-    persisted_transitional_ssh_port=""
-    persisted_port_transition_old_port=""
-
-    case "$cutover_stage" in
-    pending_transitional_verify)
-        persisted_transitional_ssh_port="${transitional_ssh_port:-}"
-        ;;
-    pending_port_transition_reboot | pending_port_commit_reboot)
-        persisted_port_transition_old_port="${port_transition_old_port:-}"
-        ;;
-    esac
-
     cutover_user_uid=$(id -u "$user")
     [ -d "$cutover_state_dir" ] || mkdir -p "$cutover_state_dir"
     chmod 700 "$cutover_state_dir"
     tmp_file=$(make_secure_tmp "$cutover_state_dir")
-    cat >"$tmp_file" <<EOF
-cutover_stage="$cutover_stage"
-cutover_boot_marker="${cutover_boot_marker:-}"
-user="$user"
-cutover_user_uid="$cutover_user_uid"
-ssh_port="$ssh_port"
-transitional_ssh_port="$persisted_transitional_ssh_port"
-disable_wheel="${disable_wheel:-}"
-remove_wheel_members="${remove_wheel_members:-}"
-wheel_sudo_finalized="${wheel_sudo_finalized_state:-}"
-wheel_membership_finalized="${wheel_membership_finalized_state:-}"
-port_transition_old_port="$persisted_port_transition_old_port"
+    state_overrides=$(
+        cat <<EOF
+cutover_stage=$cutover_stage
+cutover_user_uid=$cutover_user_uid
+wheel_sudo_finalized=$wheel_sudo_finalized_state
+wheel_membership_finalized=$wheel_membership_finalized_state
 EOF
+    )
+    base_state_settings=$(settings_block_for_vars_with_value_fn "$persisted_cutover_state_vars" "cutover_state_value")
+    render_quoted_settings_block "$(settings_block_with_overrides "$base_state_settings" "$state_overrides")" >"$tmp_file"
     chmod 600 "$tmp_file"
     atomic_replace "$cutover_state_file" "$tmp_file"
 }
@@ -1332,17 +1894,15 @@ clear_cutover_state() {
 }
 
 load_cutover_context() {
-    snapshot_public_cutover_fields
+    saved_public_cutover_settings=$(settings_block_for_vars "$public_cutover_fields")
 
     if ! load_cutover_state; then
         return 1
     fi
 
-    restore_public_cutover_fields_if_missing
+    restore_vars_from_settings_block "$public_cutover_fields" "$saved_public_cutover_settings" "yes"
 
-    for managed_var in $mutable_baseline_override_vars; do
-        eval "$managed_var=''"
-    done
+    clear_vars "$reapplied_firewall_vars"
     load_live_managed_firewall_context
 }
 
@@ -1357,13 +1917,13 @@ render_template_file() {
 
     template_file=$(template_path "$template_rel")
     if [ ! -f "$template_file" ]; then
-        echo "Error: Template not found: $template_file"
+        error_msg "Template not found: $template_file"
         return 1
     fi
 
     tmp_file=$(make_secure_tmp "$(dirname "$target")")
     if ! cp "$template_file" "$tmp_file"; then
-        echo "Error: Failed to copy template $template_file."
+        error_msg "Failed to copy template $template_file."
         rm -f "$tmp_file"
         return 1
     fi
@@ -1374,7 +1934,7 @@ render_template_file() {
         escaped_value=$(printf "%s" "$value" | sed 's/[&|\\]/\\&/g')
         next_tmp="${tmp_file}.next"
         if ! sed "s|$placeholder|$escaped_value|g" "$tmp_file" >"$next_tmp"; then
-            echo "Error: Failed to render template $template_file."
+            error_msg "Failed to render template $template_file."
             rm -f "$tmp_file" "$next_tmp"
             return 1
         fi
@@ -1382,12 +1942,17 @@ render_template_file() {
     done
 
     if [ ! -s "$tmp_file" ]; then
-        echo "Error: Rendering template $template_file failed."
+        error_msg "Rendering template $template_file failed."
         rm -f "$tmp_file"
         return 1
     fi
 
     atomic_replace "$target" "$tmp_file"
+}
+
+apply_sysrc_settings_block() {
+    settings_block="$1"
+    each_settings_block_entry "$settings_block" "apply_sysrc_settings_entry"
 }
 
 apply_settings_merge_template() {
@@ -1397,7 +1962,7 @@ apply_settings_merge_template() {
     shift 3
 
     if [ ! -f "$target_file" ]; then
-        echo "Error: $target_file not found."
+        error_msg "$target_file not found."
         return 1
     fi
 
@@ -1414,89 +1979,22 @@ apply_settings_merge_template() {
     atomic_replace "$target_file" "$tmp_file"
 }
 
-emit_kv_settings() {
-    var_list=$1
-    old_ifs=$IFS
-    IFS=' '
-    for var_name in $var_list; do
-        eval "var_value=\${$var_name}"
-        printf '%s="%s"\n' "$var_name" "${var_value-}"
-    done
-    IFS=$old_ifs
-}
-
-emit_field_settings() {
-    field_list=$1
-    old_ifs=$IFS
-    IFS='
-'
-    for entry in $field_list; do
-        [ -n "$entry" ] || continue
-        key=${entry%%=*}
-        value=${entry#*=}
-        printf '%s %s\n' "$key" "$value"
-    done
-    IFS=$old_ifs
-}
-
-emit_yes_settings() {
-    key_list=$1
-    old_ifs=$IFS
-    IFS=' '
-    for key_name in $key_list; do
-        [ -n "$key_name" ] || continue
-        printf '%s="YES"\n' "$key_name"
-    done
-    IFS=$old_ifs
-}
-
-emit_boolean_setting() {
-    key_name="$1"
-    key_value="$2"
-    printf '%s="%s"\n' "$key_name" "$key_value"
-}
-
-append_managed_strict_ssh_settings() {
-    settings_block="$1"
-    settings_block=$(append_setting_line "$settings_block" 'PasswordAuthentication=no')
-    settings_block=$(append_setting_line "$settings_block" 'AuthenticationMethods=publickey,keyboard-interactive')
-    settings_block=$(append_setting_line "$settings_block" "AllowUsers=$user")
-    printf '%s\n' "$settings_block"
-}
-
 build_firewall_loader_settings() {
-    set_default_if_empty "install_suricata" "no"
-
-    loader_settings=$(emit_yes_settings "ipfw_load dummynet_load")
-    if [ "${nat_if:-none}" != "none" ]; then
-        loader_settings=$(append_setting_line "$loader_settings" "$(emit_boolean_setting "ipfw_nat_load" "YES")")
-    else
-        loader_settings=$(append_setting_line "$loader_settings" "$(emit_boolean_setting "ipfw_nat_load" "NO")")
+    ipfw_nat_enabled="no"
+    ipdivert_enabled="no"
+    if value_is_configured "${nat_if:-none}"; then
+        ipfw_nat_enabled="yes"
     fi
-
-    if [ "$install_suricata" = "yes" ] && [ "${suricata_port:-none}" != "none" ]; then
-        loader_settings=$(append_setting_line "$loader_settings" "$(emit_boolean_setting "ipdivert_load" "YES")")
-    else
-        loader_settings=$(append_setting_line "$loader_settings" "$(emit_boolean_setting "ipdivert_load" "NO")")
+    if suricata_ports_defined && suricata_requested; then
+        ipdivert_enabled="yes"
     fi
-
-    printf '%s\n' "$loader_settings"
-}
-
-append_setting_line() {
-    settings_block=$1
-    setting_line=$2
-    if [ -n "$settings_block" ]; then
-        printf '%s\n%s\n' "$settings_block" "$setting_line"
-    else
-        printf '%s\n' "$setting_line"
-    fi
-}
-
-set_default_if_empty() {
-    var_name=$1
-    default_value=$2
-    eval "[ -n \"\${$var_name-}\" ] || $var_name=\$default_value"
+    ipfw_nat_load=$(freebsd_bool_value "$ipfw_nat_enabled")
+    ipdivert_load=$(freebsd_bool_value "$ipdivert_enabled")
+    settings=$(freebsd_true_setting "ipfw_load")
+    settings=$(append_line_block "$settings" "$(freebsd_true_setting "dummynet_load")")
+    settings=$(append_line_block "$settings" "$(quoted_setting_line "ipfw_nat_load" "$ipfw_nat_load")")
+    settings=$(append_line_block "$settings" "$(quoted_setting_line "ipdivert_load" "$ipdivert_load")")
+    printf '%s\n' "$settings"
 }
 
 ###############################################################################
@@ -1511,7 +2009,7 @@ Usage: $0 [options]
 All options are optional; missing values will be prompted interactively.
 
   -u, --user USER                 Username to allow for SSH/sudo
-  -p, --ssh-port PORT             SSH port (default: 2222)
+  -p, --ssh-port PORT             SSH port (default: $default_ssh_port)
       --ssh-ipv4 LIST             Comma-separated IPv4 list or 'any'
       --ssh-ipv6 LIST             Comma-separated IPv6 list or 'any'
       --log-ssh-hits yes|no       Enable SSH SYN count/log rules (default: no)
@@ -1525,8 +2023,8 @@ All options are optional; missing values will be prompted interactively.
       --install-auditing yes|no   Install auditing tools (default: yes)
       --install-microcode yes|no  Install CPU microcode (default: yes)
       --install-suricata yes|no   Install Suricata IPS (default: no)
-      --suricata-port PORT        Suricata divert port (default: 8000)
-      --password-exp DAYS|none    Password expiration in days (default: 120)
+      --suricata-port PORT        Suricata divert port (default when enabled: $default_suricata_port)
+      --password-exp DAYS|none    Password expiration in days (default: $default_password_expiration_days)
       --disable-wheel yes|no      Disable %wheel sudo after final admin-path validation
       --remove-wheel-members yes|no
                                   Remove non-root wheel members after final admin-path validation
@@ -1558,20 +2056,13 @@ normalize_option_name() {
 }
 
 cli_option_is_supported() {
-    case "$1" in
-    user | ssh_port | ssh_ipv4 | ssh_ipv6 | log_ssh_hits | log_wan_tcp_hits | allow_multicast | allow_multicast_legacy | internal_if | nat_if | tun_if | install_auditing | install_microcode | install_suricata | suricata_port | password_exp | disable_wheel | remove_wheel_members | confirm_stage_advance)
-        return 0
-        ;;
-    *)
-        return 1
-        ;;
-    esac
+    printf '%s\n' "$supported_cli_options" | tr ' ' '\n' | grep -qxF "$1"
 }
 
 set_option_value() {
     option_name=$(normalize_option_name "$1") || return 1
     cli_option_is_supported "$option_name" || return 1
-    eval "$option_name=\$2"
+    set_var_value "$option_name" "$2"
 }
 
 parse_arguments() {
@@ -1591,7 +2082,7 @@ parse_arguments() {
             shift 2
             ;;
         *)
-            echo "Unknown option: $1"
+            say_err "Unknown option: $1"
             usage 2
             ;;
         esac
@@ -1606,14 +2097,14 @@ parse_arguments() {
     fi
     if [ -n "$ssh_ipv4" ]; then
         normalized_ssh_ipv4=$(normalize_ssh_ip_list "$ssh_ipv4" ipv4) || {
-            echo "Invalid IPv4 list '$ssh_ipv4'. Use comma-separated IPv4 addresses or 'any'."
+            say_err "Invalid IPv4 list '$ssh_ipv4'. Use comma-separated IPv4 addresses or 'any'."
             usage 2
         }
         ssh_ipv4="$normalized_ssh_ipv4"
     fi
     if [ -n "$ssh_ipv6" ]; then
         normalized_ssh_ipv6=$(normalize_ssh_ip_list "$ssh_ipv6" ipv6) || {
-            echo "Invalid IPv6 list '$ssh_ipv6'. Use comma-separated IPv6 addresses or 'any'."
+            say_err "Invalid IPv6 list '$ssh_ipv6'. Use comma-separated IPv6 addresses or 'any'."
             usage 2
         }
         ssh_ipv6="$normalized_ssh_ipv6"
@@ -1622,10 +2113,9 @@ parse_arguments() {
     validate_optional_yes_no "${log_wan_tcp_hits-}" "--log-wan-tcp-hits" || usage 2
     validate_optional_yes_no "${allow_multicast-}" "--allow-multicast" || usage 2
     validate_optional_yes_no "${allow_multicast_legacy-}" "--allow-multicast-legacy" || usage 2
-    allow_multicast_value="${allow_multicast:-no}"
-    allow_multicast_legacy_value="${allow_multicast_legacy:-no}"
-    if [ "$allow_multicast_legacy_value" = "yes" ] && [ "$allow_multicast_value" != "yes" ]; then
-        echo "--allow-multicast-legacy yes requires --allow-multicast yes."
+    resolve_runtime_defaults
+    if value_is_yes "$allow_multicast_legacy" && ! value_is_yes "$allow_multicast"; then
+        say_err "--allow-multicast-legacy yes requires --allow-multicast yes."
         usage 2
     fi
     validate_optional_interface "${internal_if-}" || usage 2
@@ -1637,12 +2127,16 @@ parse_arguments() {
     validate_optional_yes_no "${disable_wheel-}" "--disable-wheel" || usage 2
     validate_optional_yes_no "${remove_wheel_members-}" "--remove-wheel-members" || usage 2
     validate_optional_yes_no "${confirm_stage_advance-}" "--confirm-stage-advance" || usage 2
+    if [ -n "${cpu_type-}" ]; then
+        validate_cpu_type "$cpu_type" || usage 2
+    fi
     if [ -n "$suricata_port" ]; then
         validate_port "$suricata_port" || usage 2
     fi
-    if [ -n "$password_exp" ] && [ "$password_exp" != "none" ]; then
-        validate_password_expiration "$password_exp" || usage 2
-        password_exp="${password_exp}d"
+    validate_suricata_cli_consistency || usage 2
+    if [ -n "$password_exp" ]; then
+        validate_password_expiration_value "$password_exp" || usage 2
+        password_exp=$(resolve_password_expiration_value)
     fi
 }
 
@@ -1650,15 +2144,36 @@ ensure_scalar_setting() {
     target_file="$1"
     setting="$2"
     key="${setting%%=*}"
+    tmp_file=$(make_secure_tmp "$(dirname "$target_file")")
 
-    if grep -qE "^${setting}([[:space:]]+#.*)?$" "$target_file"; then
-        return 0
-    fi
-    if grep -q "^${key}=" "$target_file"; then
-        atomic_sed_replace "$target_file" "s|^${key}=.*|${setting}|"
-    else
-        printf "%s\n" "$setting" >>"$target_file"
-    fi
+    awk -v setting_key="$key" -v replacement="$setting" '
+        {
+            line = $0
+            candidate = $0
+            sub(/[[:space:]]+#.*$/, "", candidate)
+            if (candidate == replacement) {
+                found_exact = 1
+            }
+            if (index(candidate, "=") && substr(candidate, 1, index(candidate, "=") - 1) == setting_key) {
+                if (!replaced) {
+                    print replacement
+                    replaced = 1
+                }
+                next
+            }
+            print line
+        }
+        END {
+            if (!found_exact && !replaced) {
+                print replacement
+            }
+        }
+    ' "$target_file" >"$tmp_file" || {
+        rm -f "$tmp_file"
+        return 1
+    }
+
+    atomic_replace "$target_file" "$tmp_file"
 }
 
 ensure_portacl_rule() {
@@ -1680,10 +2195,10 @@ ensure_portacl_rule() {
 
 # Clear immutable flags on system files for updates
 clear_immutable_flags() {
-    echo "Clearing immutable flags on system files for updates..."
+    say "Clearing immutable flags on system files for updates..."
     for file in $full_lockdown_files; do
         if [ ! -e "$file" ]; then
-            echo "Warning: $file does not exist, skipping."
+            warn_msg "$file does not exist, skipping."
             continue
         fi
         chflags noschg "$file"
@@ -1692,7 +2207,7 @@ clear_immutable_flags() {
 
 # Reapply immutable flags after updates
 reapply_immutable_flags() {
-    echo "Reapplying immutable flags on system files..."
+    say "Reapplying immutable flags on system files..."
     for file in $full_lockdown_files; do
         chflags schg "$file"
     done
@@ -1703,64 +2218,64 @@ reapply_immutable_flags() {
 ###############################################################################
 
 collect_user_input() {
-    echo "This script will harden your FreeBSD system by securing SSH, enabling firewall rules, configuring automatic updates, and more."
+    say "This script will harden your FreeBSD system by securing SSH, enabling firewall rules, configuring automatic updates, and more."
 
     # SSH user input
     if [ -z "$user" ]; then
-        echo "Enter a valid username for SSH access and sudo privileges."
+        say "Enter a valid username for SSH access and sudo privileges."
         printf "Enter the username to allow for SSH access: "
         read -r user
         if ! validate_user "$user"; then
-            echo "Please provide a valid username."
+            say_err "Please provide a valid username."
             return 1
         fi
     else
-        echo "Using provided username: $user"
+        say "Using provided username: $user"
     fi
 
     # SSH port input
     if [ -z "$ssh_port" ]; then
-        echo "Choose a custom SSH port (not the default 22)."
-        printf "Enter the SSH port to use (default: 2222): "
+        say "Choose a custom SSH port (not the default 22)."
+        printf "Enter the SSH port to use (default: %s): " "$default_ssh_port"
         read -r ssh_port
-        ssh_port="${ssh_port:-2222}"
+        ssh_port="${ssh_port:-$default_ssh_port}"
         validate_port "$ssh_port" || return 1
     else
-        echo "Using provided SSH port: $ssh_port"
+        say "Using provided SSH port: $ssh_port"
     fi
 
     # SSH IPv4 input
     if [ -z "$ssh_ipv4" ]; then
-        echo "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
+        say "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
         printf "Enter the SSH IPv4 addresses (comma-separated) for SSH access: "
         read -r ssh_ipv4
         normalized_ssh_ipv4=$(normalize_ssh_ip_list "$ssh_ipv4" ipv4) || {
-            echo "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
+            say_err "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
             return 1
         }
         ssh_ipv4="$normalized_ssh_ipv4"
     else
-        echo "Using provided SSH IPv4 list: $ssh_ipv4"
+        say "Using provided SSH IPv4 list: $ssh_ipv4"
     fi
 
     # SSH IPv6 input
     if [ -z "$ssh_ipv6" ]; then
-        echo "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
+        say "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
         printf "Enter the SSH IPv6 addresses (comma-separated) for SSH access: "
         read -r ssh_ipv6
         normalized_ssh_ipv6=$(normalize_ssh_ip_list "$ssh_ipv6" ipv6) || {
-            echo "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
+            say_err "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
             return 1
         }
         ssh_ipv6="$normalized_ssh_ipv6"
     else
-        echo "Using provided SSH IPv6 list: $ssh_ipv6"
+        say "Using provided SSH IPv6 list: $ssh_ipv6"
     fi
 
     prompt_yes_no_default "log_ssh_hits" "Enable SSH SYN count/log rules for firewall debugging?" "no" "--log-ssh-hits" || return 1
     prompt_yes_no_default "log_wan_tcp_hits" "Enable WAN TCP SYN count/log rules for firewall debugging?" "no" "--log-wan-tcp-hits" || return 1
     prompt_yes_no_default "allow_multicast" "Allow modern multicast on the trusted internal bridge path?" "no" "--allow-multicast" || return 1
-    if [ "$allow_multicast" = "yes" ]; then
+    if value_is_yes "$allow_multicast"; then
         prompt_yes_no_default \
             "allow_multicast_legacy" \
             "Allow legacy multicast compatibility (IGMPv1, IGMPv2, MLDv1)?" \
@@ -1790,21 +2305,14 @@ collect_user_input() {
 
     prompt_yes_no_default "install_auditing" "Do you want to install security auditing tools?" "yes" "--install-auditing" || return 1
     prompt_yes_no_default "install_microcode" "Would you like to install CPU microcode for your processor to enhance security?" "yes" "--install-microcode" || return 1
-    if [ "$install_microcode" = "yes" ]; then
-        cpu_info=$(sysctl -n hw.model | tr '[:upper:]' '[:lower:]')
-        if echo "$cpu_info" | grep -qF "intel"; then
-            cpu_type="intel"
-        elif echo "$cpu_info" | grep -qF "amd"; then
-            cpu_type="amd"
-        else
-            cpu_type="unknown"
-        fi
+    if option_enabled "install_microcode"; then
+        cpu_type=$(detect_cpu_type)
     fi
 
     # Suricata installation choice
     prompt_yes_no_default "install_suricata" "Do you want to install and configure Suricata?" "no" "--install-suricata" || return 1
-    if [ "$install_suricata" != "no" ]; then
-        set_default_if_empty "suricata_port" "8000"
+    if suricata_requested; then
+        resolve_suricata_port_default
         validate_port "$suricata_port" || return 1
     else
         suricata_port="none"
@@ -1812,20 +2320,24 @@ collect_user_input() {
 
     # Password expiration input
     if [ -z "$password_exp" ]; then
-        echo "Set the password expiration period in days. Type 'none' to disable expiration (not recommended)."
-        printf "Enter the password expiration period in days (default: 120): "
+        say "Set the password expiration period in days. Type 'none' to disable expiration (not recommended)."
+        printf "Enter the password expiration period in days (default: %s): " "$default_password_expiration_days"
         read -r password_exp
-        set_default_if_empty "password_exp" "120"
-        if [ "$password_exp" != "none" ]; then
+        set_var_if_empty "password_exp" "$default_password_expiration_days"
+        if ! value_is_none "$password_exp"; then
             validate_password_expiration "$password_exp" || return 1
-            password_exp="${password_exp}d"
+            password_exp=$(resolve_password_expiration_value)
         fi
     fi
 }
 
+###############################################################################
+# Baseline Preparation Helpers
+###############################################################################
+
 # Backup critical system configuration files
 backup_configs() {
-    echo "Creating backups of critical configuration files..."
+    say "Creating backups of critical configuration files..."
     backup_dir="/etc/backup_$(date +%Y%m%d_%H%M%S)"
     backup_files="/etc/rc.conf /etc/sysctl.conf /etc/login.conf /boot/loader.conf /etc/ssh/sshd_config /etc/pam.d/sshd /etc/ttys"
     mkdir -p "$backup_dir"
@@ -1834,12 +2346,17 @@ backup_configs() {
         cp "$conf_file" "$backup_dir"
     done
     chflags -R schg "$backup_dir"
-    echo "Backup completed and made immutable. Files saved in $backup_dir."
+    say "Backup completed and made immutable. Files saved in $backup_dir."
 }
 
 # Update FreeBSD and install necessary packages (sudo-rs, fail2ban, Suricata, Google Authenticator)
 update_and_install_packages() {
-    echo "Updating FreeBSD and installing necessary packages (sudo-rs, fail2ban, Google Authenticator)..."
+    say "Updating FreeBSD and installing necessary packages (sudo-rs, fail2ban, Google Authenticator)..."
+    resolve_package_option_defaults
+    if option_enabled "install_microcode" && [ "${cpu_type:-unknown}" = "unknown" ]; then
+        cpu_type=$(detect_cpu_type)
+    fi
+
     # FreeBSD update is not supported on all architectures
     freebsd_update_supported="no"
     if freebsd-update fetch install; then
@@ -1849,31 +2366,31 @@ update_and_install_packages() {
     pkg install -y sudo-rs anacron pam_google_authenticator py311-fail2ban
 
     # Install security auditing tools if the user opted in
-    if [ "$install_auditing" = "yes" ]; then
+    if option_enabled "install_auditing"; then
         pkg install -y lynis spectre-meltdown-checker
     else
-        echo "Skipping auditing tools installation."
+        say "Skipping auditing tools installation."
     fi
 
     # Install CPU microcode if the user opted in
     if [ "$cpu_type" = "intel" ]; then
-        echo "Detected Intel CPU. Installing 'cpu-microcode-intel' package."
+        say "Detected Intel CPU. Installing 'cpu-microcode-intel' package."
         pkg install -y cpu-microcode-intel
     elif [ "$cpu_type" = "amd" ]; then
-        echo "Detected AMD CPU. Installing 'cpu-microcode-amd' package."
+        say "Detected AMD CPU. Installing 'cpu-microcode-amd' package."
         pkg install -y cpu-microcode-amd
     else
-        echo "Could not detect Intel or AMD CPU. Skipping microcode installation."
+        say "Could not detect Intel or AMD CPU. Skipping microcode installation."
     fi
 
     # Install Suricata if the user opted in
-    if [ "$install_suricata" = "yes" ]; then
-        echo "Installing Suricata..."
+    if suricata_requested; then
+        say "Installing Suricata..."
         pkg install -y suricata
         suricata-update
-        echo "Suricata installed and updated."
+        say "Suricata installed and updated."
     else
-        echo "Skipping Suricata installation."
+        say "Skipping Suricata installation."
     fi
 
     # Fetch pkg audit database
@@ -1885,13 +2402,13 @@ update_and_install_packages() {
 
 # Prepare SSH key material for the SSH user
 prepare_ssh_user_access() {
-    echo "Preparing SSH key access for the SSH user..."
+    say "Preparing SSH key access for the SSH user..."
     set_user_auth_paths "$user"
     generated_ssh_key="no"
 
     # Ensure .ssh directory exists with correct permissions
     if [ ! -d "$ssh_dir" ]; then
-        echo "Creating .ssh directory for $user..."
+        say "Creating .ssh directory for $user..."
         mkdir -p "$ssh_dir"
     fi
 
@@ -1901,31 +2418,31 @@ prepare_ssh_user_access() {
 
     # Check for any existing SSH key pairs in the .ssh directory
     if [ -f "$ssh_key" ] || [ -f "$ssh_pub_key" ]; then
-        echo "SSH key pair already exists for $user."
+        say "SSH key pair already exists for $user."
     else
-        echo "No SSH key found for $user. Generating a new key pair..."
+        say "No SSH key found for $user. Generating a new key pair..."
         su - "$user" -c "ssh-keygen -t ed25519 -f $ssh_key -N '' -q"
         generated_ssh_key="yes"
     fi
 
     # Set up authorized_keys
     if [ ! -f "$authorized_keys" ]; then
-        echo "Creating authorized_keys for $user..."
+        say "Creating authorized_keys for $user..."
         if [ -f "$ssh_pub_key" ]; then
             cat "$ssh_pub_key" >"$authorized_keys"
         else
-            echo "Public key not found. Ensure a key pair exists before running this script."
+            say_err "Public key not found. Ensure a key pair exists before running this script."
             return 1
         fi
     else
-        echo "authorized_keys already exists for $user. Checking if the public key is present..."
+        say "authorized_keys already exists for $user. Checking if the public key is present..."
         # Extract key type and key value from the public key file
         key_type_and_value=$(awk '{print $1, $2}' "$ssh_pub_key")
         if ! grep -qF "$key_type_and_value" "$authorized_keys"; then
-            echo "Adding missing public key to authorized_keys."
+            say "Adding missing public key to authorized_keys."
             cat "$ssh_pub_key" >>"$authorized_keys"
         else
-            echo "Public key already exists in authorized_keys."
+            say "Public key already exists in authorized_keys."
         fi
     fi
 
@@ -1943,25 +2460,27 @@ prepare_ssh_user_access() {
         chown "$user:$user" "$ssh_pub_key"
     fi
 
-    echo "Public key authentication prepared for $user."
+    say "Public key authentication prepared for $user."
 
-    if [ "$generated_ssh_key" = "yes" ]; then
-        echo ""
-        echo "IMPORTANT: You must securely copy the private key to your local machine before rebooting."
-        echo "To securely transfer the private key, run the following command on your local machine:"
-        echo ""
-        echo "scp <username>@<remote_host>:$ssh_dir/id_ed25519 ~/.ssh/"
-        echo ""
-        echo "After copying the private key, delete it from the remote server for security:"
-        echo "ssh <username>@<remote_host> 'rm $ssh_dir/id_ed25519'"
-        echo ""
-        echo "Ensure the permissions for the private key on your local machine are set correctly with:"
-        echo "chmod 600 ~/.ssh/id_ed25519"
-        echo ""
-        echo "Press ENTER to confirm you have securely copied the private key and are ready to proceed."
+    if value_is_yes "$generated_ssh_key"; then
+        cat <<EOF
+
+IMPORTANT: You must securely copy the private key to your local machine before rebooting.
+To securely transfer the private key, run the following command on your local machine:
+
+scp <username>@<remote_host>:$ssh_dir/id_ed25519 ~/.ssh/
+
+After copying the private key, delete it from the remote server for security:
+ssh <username>@<remote_host> 'rm $ssh_dir/id_ed25519'
+
+Ensure the permissions for the private key on your local machine are set correctly with:
+chmod 600 ~/.ssh/id_ed25519
+
+Press ENTER to confirm you have securely copied the private key and are ready to proceed.
+EOF
         read -r _dummy_variable
     else
-        echo "Existing SSH key access is already present for $user."
+        say "Existing SSH key access is already present for $user."
     fi
 }
 
@@ -1971,37 +2490,52 @@ prepare_ssh_user_access() {
 
 build_sshd_settings() {
     ssh_profile="$1"
-    sshd_settings='
-PermitRootLogin=no
-MaxAuthTries=3
-KbdInteractiveAuthentication=yes
-PubkeyAuthentication=yes
-UsePAM=yes
-UseDNS=no
-ClientAliveInterval=60
-ClientAliveCountMax=1
-'
+    ssh_ports_block=""
+    strict_auth_block=""
+
+    base_settings='
+PermitRootLogin no
+MaxAuthTries 3
+KbdInteractiveAuthentication yes
+PubkeyAuthentication yes
+UsePAM yes
+UseDNS no
+ClientAliveInterval 60
+ClientAliveCountMax 1'
 
     case "$ssh_profile" in
     transitional)
-        sshd_settings=$(append_setting_line "$sshd_settings" 'PasswordAuthentication=yes')
+        printf '%s\nPasswordAuthentication yes\n' "$base_settings"
         ;;
     port_transition)
-        sshd_settings=$(append_managed_strict_ssh_settings "$sshd_settings")
-        sshd_settings=$(append_setting_line "$sshd_settings" "Port=$port_transition_old_port")
-        sshd_settings=$(append_setting_line "$sshd_settings" "Port=$ssh_port")
+        strict_auth_block=$(cat <<EOF
+PasswordAuthentication no
+AuthenticationMethods publickey,keyboard-interactive
+AllowUsers $user
+EOF
+)
+        ssh_ports_block=$(cat <<EOF
+Port $port_transition_old_port
+Port $ssh_port
+EOF
+)
+        printf '%s\n%s\n%s\n' "$base_settings" "$strict_auth_block" "$ssh_ports_block"
         ;;
     strict)
-        sshd_settings=$(append_managed_strict_ssh_settings "$sshd_settings")
-        sshd_settings=$(append_setting_line "$sshd_settings" "Port=$ssh_port")
+        strict_auth_block=$(cat <<EOF
+PasswordAuthentication no
+AuthenticationMethods publickey,keyboard-interactive
+AllowUsers $user
+Port $ssh_port
+EOF
+)
+        printf '%s\n%s\n' "$base_settings" "$strict_auth_block"
         ;;
     *)
-        echo "Error: Unknown SSH profile '$ssh_profile'."
+        error_msg "Unknown SSH profile '$ssh_profile'."
         return 1
         ;;
     esac
-
-    emit_field_settings "$sshd_settings"
 }
 
 apply_sshd_profile() {
@@ -2019,25 +2553,17 @@ ssh_port_transition_requested() {
         [ "$cli_ssh_port" != "$ssh_port" ]
 }
 
-set_port_transition_values() {
-    port_transition_old_port="$1"
-}
-
-clear_port_transition_values() {
-    port_transition_old_port=""
-}
-
 write_port_transition_state() {
     transition_stage="$1"
     cutover_boot_marker=$(current_boot_marker)
-    wheel_sudo_finalized=$(resolved_wheel_sudo_finalized_state)
-    wheel_membership_finalized=$(resolved_wheel_membership_finalized_state)
+    wheel_sudo_finalized=$(resolved_finalized_state "disable_wheel" "wheel_sudo_finalized")
+    wheel_membership_finalized=$(resolved_finalized_state "remove_wheel_members" "wheel_membership_finalized")
     write_cutover_state "$transition_stage" "$wheel_sudo_finalized" "$wheel_membership_finalized"
 }
 
 validate_port_transition_cli_consistency() {
     if [ -n "${cli_ssh_port-}" ] && [ "$cli_ssh_port" != "$ssh_port" ]; then
-        echo "Error: A staged SSH port transition to '$ssh_port' is already pending, but --ssh-port requested '$cli_ssh_port'. Complete or clear the pending port transition first."
+        error_msg "A staged SSH port transition to '$ssh_port' is already pending, but --ssh-port requested '$cli_ssh_port'. Complete or clear the pending port transition first."
         return 1
     fi
 }
@@ -2048,21 +2574,19 @@ run_port_transition_stage_one() {
 
     clear_immutable_flags
     restore_desired_mutable_baseline_settings
-    set_port_transition_values "$old_ssh_port"
+    port_transition_old_port="$old_ssh_port"
     ssh_port="$new_ssh_port"
     configure_firewall_boot || return 1
-    if ! apply_sshd_profile port_transition; then
-        return 1
-    fi
+    apply_sshd_profile port_transition || return 1
     write_port_transition_state "pending_port_transition_reboot"
-    current_firewall_runtime_state=$(firewall_runtime_state_class)
+    runtime_state=$(firewall_runtime_state_class)
     reapply_immutable_flags
-    echo "SSH port transition stage 1 complete. Boot policy now allows both the old port ($old_ssh_port) and the new port ($new_ssh_port)."
+    say "SSH port transition stage 1 complete. Boot policy now allows both the old port ($old_ssh_port) and the new port ($new_ssh_port)."
     if kldstat -q -m ipfw >/dev/null 2>&1; then
-        echo "Runtime ipfw is still enforcing the pre-reboot ruleset on this boot. The dual-port firewall policy will take effect after reboot."
+        say "Runtime ipfw is still enforcing the pre-reboot ruleset on this boot. The dual-port firewall policy will take effect after reboot."
     fi
-    warn_if_firewall_runtime_absent
-    echo "Reboot the host, verify a fresh login on the new SSH port, then rerun this script with --confirm-stage-advance yes to remove the old SSH port from the managed boot policy."
+    warn_if_firewall_runtime_absent "$runtime_state"
+    say "$pending_port_reboot_next_step"
 }
 
 run_port_transition_stage_two() {
@@ -2072,21 +2596,19 @@ run_port_transition_stage_two() {
     clear_immutable_flags
     restore_desired_mutable_baseline_settings
     ssh_port="$new_ssh_port"
-    clear_port_transition_values
+    port_transition_old_port=""
     configure_firewall_boot || return 1
-    if ! apply_sshd_profile strict; then
-        return 1
-    fi
-    set_port_transition_values "$old_ssh_port"
+    apply_sshd_profile strict || return 1
+    port_transition_old_port="$old_ssh_port"
     write_port_transition_state "pending_port_commit_reboot"
-    current_firewall_runtime_state=$(firewall_runtime_state_class)
+    runtime_state=$(firewall_runtime_state_class)
     reapply_immutable_flags
-    echo "SSH port transition stage 2 complete. Managed boot policy now keeps only the new SSH port ($new_ssh_port)."
+    say "SSH port transition stage 2 complete. Managed boot policy now keeps only the new SSH port ($new_ssh_port)."
     if kldstat -q -m ipfw >/dev/null 2>&1; then
-        echo "Runtime ipfw is still enforcing the pre-reboot ruleset on this boot. The new-port-only firewall policy will take effect after reboot."
+        say "Runtime ipfw is still enforcing the pre-reboot ruleset on this boot. The new-port-only firewall policy will take effect after reboot."
     fi
-    warn_if_firewall_runtime_absent
-    echo "Reboot the host, verify a fresh login on the new SSH port again, then rerun this script with --confirm-stage-advance yes to finalize the port migration."
+    warn_if_firewall_runtime_absent "$runtime_state"
+    say "$pending_port_commit_reboot_next_step"
 }
 
 run_port_transition_stage_three() {
@@ -2095,22 +2617,28 @@ run_port_transition_stage_three() {
     clear_immutable_flags
     ssh_port="$new_ssh_port"
     transitional_ssh_port=""
-    clear_port_transition_values
+    port_transition_old_port=""
     record_committed_cutover_state current || return 1
     reapply_immutable_flags
-    echo "SSH port migration to $new_ssh_port has been finalized."
+    say "SSH port migration to $new_ssh_port has been finalized."
 }
 
 reload_sshd_safe() {
     if ! sshd -t -f "$sshd_config_file" >/dev/null 2>&1; then
-        echo "Error: sshd configuration validation failed."
+        error_msg "sshd configuration validation failed."
         return 1
     fi
 
     if ! service sshd reload >/dev/null 2>&1; then
-        echo "Error: Failed to reload sshd."
+        error_msg "Failed to reload sshd."
         return 1
     fi
+}
+
+apply_and_reload_sshd_profile() {
+    ssh_profile="$1"
+    apply_sshd_profile "$ssh_profile" || return 1
+    reload_sshd_safe
 }
 
 ###############################################################################
@@ -2119,35 +2647,34 @@ reload_sshd_safe() {
 
 # Configure PAM security settings
 configure_ssh_pam() {
-    echo "Configuring SSH PAM for Google Authenticator..."
-    ga_pam_line="auth requisite pam_google_authenticator.so"
+    say "Configuring SSH PAM for Google Authenticator..."
 
     # Check if pam_google_authenticator.so is already present
-    if grep -q "^$ga_pam_line" "$pam_sshd_config_file"; then
-        echo "Google Authenticator is already enabled in PAM SSH configuration."
+    if grep -qxF "$ssh_pam_ga_line" "$pam_sshd_config_file"; then
+        say "Google Authenticator is already enabled in PAM SSH configuration."
         return
     fi
     pam_sshd_tmp=$(make_secure_tmp "$(dirname "$pam_sshd_config_file")")
 
-    if ! run_awk_template "$pam_sshd_config_file" "$pam_sshd_tmp" "$pam_sshd_config_file" "awk/pam_sshd_google_auth.awk" -v ga_line="$ga_pam_line"; then
+    if ! run_awk_template "$pam_sshd_config_file" "$pam_sshd_tmp" "$pam_sshd_config_file" "awk/pam_sshd_google_auth.awk" -v ga_line="$ssh_pam_ga_line"; then
         return 1
     fi
 
     # Replace the sshd config file atomically
     atomic_replace "$pam_sshd_config_file" "$pam_sshd_tmp"
 
-    echo "Google Authenticator added to the auth section of PAM SSH configuration."
-    echo "SSH and PAM changes have been written to disk; the staged cutover will validate and reload sshd explicitly."
+    say "Google Authenticator added to the auth section of PAM SSH configuration."
+    say "SSH and PAM changes have been written to disk; the staged cutover will validate and reload sshd explicitly."
 }
 
 # Configure Google Authenticator TOTP for the SSH user
 configure_google_auth() {
-    echo "Configuring Google Authenticator TOTP for the SSH user..."
+    say "Configuring Google Authenticator TOTP for the SSH user..."
 
     set_user_auth_paths "$user"
 
     if [ -f "$ga_config" ] && [ -s "$ga_config" ]; then
-        echo "Google Authenticator TOTP is already configured for $user."
+        say "Google Authenticator TOTP is already configured for $user."
         return 0
     fi
 
@@ -2159,29 +2686,33 @@ configure_google_auth() {
     chown "$user:$user" "$ga_config"
 
     # Provide clear instructions for the user
-    echo ""
-    echo "Google Authenticator TOTP configuration is complete."
-    echo "IMPORTANT: Copy and securely store the following details:"
-    echo "1. Your secret key (used to set up TOTP in your app)."
-    echo "2. Emergency scratch codes (for recovery if your TOTP device is unavailable)."
-    echo ""
-    echo "Without these details, you may lose access to this system."
-    echo ""
-    echo "You can always re-run this script to regenerate a new secret key, but doing so will invalidate any previously configured TOTP apps."
-    echo ""
+    cat <<'EOF'
+
+Google Authenticator TOTP configuration is complete.
+IMPORTANT: Copy and securely store the following details:
+1. Your secret key (used to set up TOTP in your app).
+2. Emergency scratch codes (for recovery if your TOTP device is unavailable).
+
+Without these details, you may lose access to this system.
+EOF
+    cat <<'EOF'
+
+You can always re-run this script to regenerate a new secret key, but doing so will invalidate any previously configured TOTP apps.
+
+EOF
 
     # Pause and wait for user confirmation
-    echo "Press ENTER to confirm you have securely saved the secret key and scratch codes."
+    say "Press ENTER to confirm you have securely saved the secret key and scratch codes."
     read -r _dummy_variable
 }
 
 # Prepare sudo access for the SSH user without changing deferred admin fallback policy yet
 prepare_sudo_access() {
-    echo "Preparing sudo access for administrative users..."
+    say "Preparing sudo access for administrative users..."
 
     # Create the sudo group if it doesn't exist
     if ! getent group sudo >/dev/null; then
-        echo "Creating sudo group..."
+        say "Creating sudo group..."
         pw groupadd sudo
     fi
 
@@ -2191,36 +2722,33 @@ prepare_sudo_access() {
 
     printf "\nEnter additional usernames to add to the sudo group (comma-separated, leave blank to skip): "
     read -r users_to_add
-    users_to_add="${user},${users_to_add}"
+    users_to_add=$(csv_items_lines "${user},${users_to_add}")
 
     if [ -n "$users_to_add" ]; then
-        users_added=""
         # Split input into individual usernames
-        for member_user in $(echo "$users_to_add" | tr ',' '\n'); do
-            member_user=$(echo "$member_user" | xargs) # Trim whitespace
+        valid_users_to_add=""
+        for member_user in $users_to_add; do
             if validate_user "$member_user"; then
-                pw groupmod sudo -m "$member_user"
-                users_added="${users_added}${member_user},"
+                valid_users_to_add=$(append_line_block "$valid_users_to_add" "$member_user")
             fi
         done
 
-        # Print added users, trimming the trailing comma
-        if [ -n "$users_added" ]; then
-            users_added=$(echo "$users_added" | sed 's/,$//') # Remove trailing comma
-            echo "Users added to the sudo group: ${users_added}"
-        else
-            echo "No users added to the sudo group."
-        fi
+        update_group_membership \
+            "sudo" \
+            "add" \
+            "$valid_users_to_add" \
+            "Users added to the sudo group:" \
+            "No users added to the sudo group." || return 1
     fi
 
     # Configure sudoers file for the sudo group
     if [ ! -f /usr/local/etc/sudoers.d/sudo ]; then
-        echo "$sudo_policy_line" >/usr/local/etc/sudoers.d/sudo
+        printf '%s\n' "$sudo_policy_line" >/usr/local/etc/sudoers.d/sudo
         chmod 440 /usr/local/etc/sudoers.d/sudo
     fi
 
     if ! visudo -c >/dev/null; then
-        echo "Error: sudoers validation failed. Wheel access will not be changed."
+        error_msg "sudoers validation failed. Wheel access will not be changed."
         return 1
     fi
 
@@ -2241,15 +2769,17 @@ prepare_sudo_access() {
             "remove_wheel_members" || return 1
     fi
 
-    echo "Sudo access prepared and validated. Deferred admin fallback policy changes will wait until the final admin-path validation passes."
+    say "Sudo access prepared and validated. Deferred admin fallback policy changes will wait until the final admin-path validation passes."
 }
 
 # Validate that the replacement admin path exists before any deferred admin fallback policy changes happen
 assert_admin_access_ready() {
     set_user_auth_paths "$user"
 
-    if admin_access_is_ready; then
-        echo "Final admin-path validation passed. SSH/PAM config is syntax-valid and the replacement sudo path is present."
+    if [ -n "${user-}" ] &&
+        validate_user "$user" >/dev/null 2>&1 &&
+        managed_admin_path_matches_state; then
+        say "Final admin-path validation passed. SSH/PAM config is syntax-valid and the replacement sudo path is present."
         return 0
     fi
 
@@ -2283,52 +2813,55 @@ assert_admin_access_ready() {
         return 1
     fi
 
-    echo "Final admin-path validation passed. SSH/PAM config is syntax-valid and the replacement sudo path is present."
+    say "Final admin-path validation passed. SSH/PAM config is syntax-valid and the replacement sudo path is present."
 }
 
 # Finalize sudo hardening only after the replacement admin path has been validated
 finalize_sudo_access() {
-    echo "Finalizing sudo hardening..."
+    say "Finalizing sudo hardening..."
     set_default_if_empty "disable_wheel" "no"
     set_default_if_empty "remove_wheel_members" "no"
 
-    if [ "$disable_wheel" = "yes" ]; then
-        echo "Disabling sudo access for the wheel group..."
+    if option_enabled "disable_wheel"; then
+        say "Disabling sudo access for the wheel group..."
 
-        if grep -qE "$wheel_sudo_regex" /usr/local/etc/sudoers; then
-            atomic_sed_replace /usr/local/etc/sudoers -E "s/${wheel_sudo_regex}/# &/"
-            echo "Commented out %wheel group sudo access in /usr/local/etc/sudoers."
+        if awk '
+            /^%wheel[[:blank:]]+ALL=\(ALL(:ALL)?\)[[:blank:]]+(NOPASSWD:[[:blank:]]+)?ALL$/ {
+                found = 1
+                exit
+            }
+            END { exit(found ? 0 : 1) }
+        ' /usr/local/etc/sudoers; then
+            sudoers_tmp=$(make_secure_tmp /usr/local/etc)
+            if ! run_awk_template /usr/local/etc/sudoers "$sudoers_tmp" /usr/local/etc/sudoers "awk/sudoers_disable_wheel.awk"; then
+                return 1
+            fi
+            atomic_replace /usr/local/etc/sudoers "$sudoers_tmp"
+            say "Commented out %wheel group sudo access in /usr/local/etc/sudoers."
         fi
 
         if [ -f /usr/local/etc/sudoers.d/wheel ]; then
             mv /usr/local/etc/sudoers.d/wheel /usr/local/etc/sudoers.d/wheel.disabled
-            echo "Disabled /usr/local/etc/sudoers.d/wheel."
+            say "Disabled /usr/local/etc/sudoers.d/wheel."
         fi
     else
-        echo "Wheel group sudo access remains enabled."
+        say "Wheel group sudo access remains enabled."
     fi
 
-    if [ "$remove_wheel_members" = "yes" ]; then
-        users_removed=""
-        echo "Removing non-root users from the wheel group..."
-        for wheel_user in $(getent group wheel | cut -d ':' -f 4 | tr ',' '\n'); do
-            if [ "$wheel_user" != "root" ] && [ -n "$wheel_user" ]; then
-                pw groupmod wheel -d "$wheel_user"
-                users_removed="${users_removed}${wheel_user},"
-            fi
-        done
-
-        if [ -n "$users_removed" ]; then
-            users_removed=$(echo "$users_removed" | sed 's/,$//')
-            echo "Users removed from the wheel group: ${users_removed}"
-        else
-            echo "No users removed from the wheel group."
-        fi
+    if option_enabled "remove_wheel_members"; then
+        say "Removing non-root users from the wheel group..."
+        removable_wheel_users=$(printf '%s\n' "$(group_member_lines wheel)" | grep -vx 'root' || true)
+        update_group_membership \
+            "wheel" \
+            "remove" \
+            "$removable_wheel_users" \
+            "Users removed from the wheel group:" \
+            "No users removed from the wheel group." || return 1
     else
-        echo "No users removed from the wheel group."
+        say "No users removed from the wheel group."
     fi
 
-    echo "Sudo hardening finalized. Log out and log in again before relying on the new sudo group membership."
+    say "Sudo hardening finalized. Log out and log in again before relying on the new sudo group membership."
 }
 
 ###############################################################################
@@ -2343,16 +2876,11 @@ run_stage_one_after_input() {
     prepare_ssh_user_access
     configure_google_auth
     configure_ssh_pam
-    if ! apply_sshd_profile transitional; then
-        return 1
-    fi
-    if ! reload_sshd_safe; then
-        return 1
-    fi
-    sshd_effective=$(sshd -T -f "$sshd_config_file" 2>/dev/null) || return 1
+    apply_and_reload_sshd_profile transitional || return 1
+    sshd_effective=$(load_effective_sshd) || return 1
     transitional_ssh_port=$(effective_sshd_ports_csv "$sshd_effective")
     [ -n "$transitional_ssh_port" ] || {
-        echo "Error: Could not determine the transitional SSH port after reloading sshd."
+        error_msg "Could not determine the transitional SSH port after reloading sshd."
         return 1
     }
     prepare_sudo_access
@@ -2366,47 +2894,42 @@ run_stage_one_after_input() {
     harden_sysctl
     write_cutover_state "pending_transitional_verify"
     lock_down_system
-    echo "Stage 1 complete. A transitional SSH configuration has been reloaded."
-    echo "Verify that you can log in through a fresh SSH session using the new path, then rerun this script with --confirm-stage-advance yes to enforce strict SSH authentication."
-    echo "Firewall boot activation is still deferred. Rebooting now will not activate the managed ipfw boot path yet."
+    say "Stage 1 complete. A transitional SSH configuration has been reloaded."
+    say "Verify that you can log in through a fresh SSH session using the new path, then rerun this script with --confirm-stage-advance yes to enforce strict SSH authentication."
+    say "Firewall boot activation is still deferred. Rebooting now will not activate the managed ipfw boot path yet."
 }
 
 run_stage_two() {
     clear_immutable_flags
     restore_desired_mutable_baseline_settings
     transitional_ssh_port=""
-    if ! apply_sshd_profile strict; then
-        return 1
-    fi
-    if ! reload_sshd_safe; then
-        return 1
-    fi
+    apply_and_reload_sshd_profile strict || return 1
     assert_admin_access_ready
     configure_firewall_boot
-    wheel_sudo_finalized=$(resolved_wheel_sudo_finalized_state)
-    wheel_membership_finalized=$(resolved_wheel_membership_finalized_state)
+    wheel_sudo_finalized=$(resolved_finalized_state "disable_wheel" "wheel_sudo_finalized")
+    wheel_membership_finalized=$(resolved_finalized_state "remove_wheel_members" "wheel_membership_finalized")
     write_cutover_state "pending_strict_verify" "$wheel_sudo_finalized" "$wheel_membership_finalized"
     reapply_immutable_flags
-    echo "Stage 2 complete. Strict SSH authentication has been reloaded."
-    echo "Firewall boot handling has now been committed and future reboots will use the managed firewall configuration."
-    echo "Verify a fresh pubkey+TOTP login, then rerun this script with --confirm-stage-advance yes to finalize the deferred admin fallback policy."
+    say "Stage 2 complete. Strict SSH authentication has been reloaded."
+    say "Firewall boot handling has now been committed and future reboots will use the managed firewall configuration."
+    say "Verify a fresh pubkey+TOTP login, then rerun this script with --confirm-stage-advance yes to finalize the deferred admin fallback policy."
 }
 
 advance_pending_strict_stage() {
     converge_strict_cutover_state || return 1
-    if cutover_policy_requires_fallback_removal && ! wheel_policy_fully_finalized; then
+    if { option_enabled "disable_wheel" || option_enabled "remove_wheel_members"; } && ! wheel_policy_fully_finalized; then
         finalize_deferred_admin_fallback || return 1
-        echo "Strict SSH has been externally verified. Deferred admin fallback policy has now been finalized."
+        say "Strict SSH has been externally verified. Deferred admin fallback policy has now been finalized."
     else
         record_committed_cutover_state || return 1
-        echo "Strict SSH has been externally verified and committed without deferred admin fallback changes."
+        say "Strict SSH has been externally verified and committed without deferred admin fallback changes."
     fi
 }
 
 advance_pending_port_commit_stage() {
     run_port_transition_stage_three || return 1
-    if cutover_policy_requires_fallback_removal && ! wheel_policy_fully_finalized; then
-        echo "SSH port migration is complete. Rerun the script to finalize the deferred admin fallback policy."
+    if { option_enabled "disable_wheel" || option_enabled "remove_wheel_members"; } && ! wheel_policy_fully_finalized; then
+        say "SSH port migration is complete. Rerun the script to finalize the deferred admin fallback policy."
     fi
 }
 
@@ -2416,13 +2939,52 @@ handle_pending_stage() {
     validate_fn="$3"
     advance_fn="$4"
 
-    validate_saved_cutover_cli_consistency || return 1
+    validate_port_transition_cli_consistency || return 1
+    enforce_managed_cutover_cli_policy "pending_state" || return 1
     if [ "$confirm_stage_advance" != "yes" ]; then
-        pending_cutover_message "$stage_label" "$next_step"
+        printf '%s is pending verification.\n' "$stage_label"
+        printf '%s\n' "$next_step"
         return 0
     fi
     "$validate_fn" || return 1
     "$advance_fn"
+}
+
+run_managed_cutover_action() {
+    action="$1"
+    shift
+    cli_policy_context="$1"
+    shift
+
+    validate_cutover_state_alignment || return 1
+    validate_port_transition_cli_consistency || return 1
+    enforce_managed_cutover_cli_policy "$cli_policy_context" || return 1
+
+    "$action" "$@"
+}
+
+run_committed_cutover_mode() {
+    committed_mode="$1"
+
+    validate_cutover_state_alignment || return 1
+    validate_port_transition_cli_consistency || return 1
+    enforce_managed_cutover_cli_policy "committed_state" || return 1
+
+    case "$committed_mode" in
+    strict_ready_for_finalize)
+        say "A committed strict SSH/firewall state is already present. Converging the strict state before finalizing deferred admin cleanup."
+        converge_strict_cutover_state || return 1
+        finalize_deferred_admin_fallback || return 1
+        ;;
+    fully_hardened)
+        say "A committed strict SSH/firewall state is already present. Reapplying the baseline without staged prompts."
+        run_strict_baseline_reapply "no"
+        ;;
+    *)
+        error_msg "Unknown committed cutover mode '$committed_mode'."
+        return 1
+        ;;
+    esac
 }
 
 run_strict_baseline_reapply() {
@@ -2437,13 +2999,10 @@ run_strict_baseline_reapply() {
     prepare_ssh_user_access
     configure_google_auth
     configure_ssh_pam
-    if ! apply_sshd_profile strict; then
-        return 1
-    fi
-    if ! reload_sshd_safe; then
-        return 1
-    fi
-    if ! admin_access_is_ready; then
+    apply_and_reload_sshd_profile strict || return 1
+    if ! { [ -n "${user-}" ] &&
+        validate_user "$user" >/dev/null 2>&1 &&
+        managed_admin_path_matches_state; }; then
         prepare_sudo_access || return 1
     fi
     assert_admin_access_ready
@@ -2456,20 +3015,29 @@ run_strict_baseline_reapply() {
     harden_loader_conf
     harden_sysctl
 
-    if [ "$finalize_admin_fallback" = "yes" ]; then
+    if value_is_yes "$finalize_admin_fallback"; then
         finalize_sudo_access
         record_committed_cutover_state "final"
-        echo "Strict SSH is already live. Deferred admin cleanup has been finalized in this run."
+        say "Strict SSH is already live. Deferred admin cleanup has been finalized in this run."
     else
         record_committed_cutover_state
-        echo "System is already fully hardened. Reapplying the baseline without staged SSH cutover."
+        say "System is already fully hardened. Reapplying the baseline without staged SSH cutover."
     fi
 
     lock_down_system
 }
 
+run_stage_one_port_transition_if_requested() {
+    if ssh_port_transition_requested; then
+        run_managed_cutover_action "run_port_transition_stage_one" "committed_state"
+        return 0
+    fi
+
+    return 1
+}
+
 handle_pending_cutover() {
-    set_default_if_empty "confirm_stage_advance" "no"
+    resolve_runtime_defaults
     if [ "${cutover_stage:-}" = "committed_strict_ready" ] &&
         [ "${cutover_stage:-}" != "pending_port_transition_reboot" ] &&
         [ "${cutover_stage:-}" != "pending_port_commit_reboot" ]; then
@@ -2479,9 +3047,10 @@ handle_pending_cutover() {
     if ssh_port_transition_requested &&
         [ "${cutover_stage:-}" != "pending_port_transition_reboot" ] &&
         [ "${cutover_stage:-}" != "pending_port_commit_reboot" ]; then
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_port_transition_stage_one
+        if [ "${cutover_stage:-}" = "committed_strict_ready" ]; then
+            say "$committed_ssh_port_transition_mode_message"
+        fi
+        run_managed_cutover_action "run_port_transition_stage_one" "committed_state"
         return
     fi
 
@@ -2489,17 +3058,10 @@ handle_pending_cutover() {
 
     case "${cutover_mode:-needs_stage_one}" in
     strict_ready_for_finalize)
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        echo "A committed strict SSH/firewall state is already present. Converging the strict state before finalizing deferred admin cleanup."
-        converge_strict_cutover_state || return 1
-        finalize_deferred_admin_fallback || return 1
+        run_committed_cutover_mode "strict_ready_for_finalize"
         ;;
     fully_hardened)
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        echo "A committed strict SSH/firewall state is already present. Reapplying the baseline without staged prompts."
-        run_strict_baseline_reapply "no"
+        run_committed_cutover_mode "fully_hardened"
         ;;
     pending_transitional_verify)
         handle_pending_stage \
@@ -2518,19 +3080,22 @@ handle_pending_cutover() {
     pending_port_transition_reboot)
         handle_pending_stage \
             "A dual-port SSH reboot transition" \
-            "Reboot the host, verify a fresh login on the new SSH port, then rerun this script with --confirm-stage-advance yes to remove the old SSH port from the managed boot policy." \
+            "$pending_port_reboot_next_step" \
             "validate_pending_port_transition_alignment" \
             "run_port_transition_stage_two"
         ;;
     pending_port_commit_reboot)
         handle_pending_stage \
             "A new-port-only SSH reboot transition" \
-            "Reboot the host, verify a fresh login on the new SSH port again, then rerun this script with --confirm-stage-advance yes to finalize the port migration." \
+            "$pending_port_commit_reboot_next_step" \
             "validate_pending_port_transition_alignment" \
             "advance_pending_port_commit_stage"
         ;;
     *)
-        echo "Stored cutover state is stale or incomplete. Clearing it and starting a fresh evaluation."
+        if cutover_defining_cli_requested; then
+            enforce_managed_cutover_cli_policy "stale_state" || return 1
+        fi
+        say "Stored cutover state is stale or incomplete. Clearing it and starting a fresh evaluation."
         clear_cutover_state
         run_without_cutover_state
         ;;
@@ -2540,24 +3105,17 @@ handle_pending_cutover() {
 run_without_cutover_state() {
     detect_cutover_mode
 
-    if ssh_port_transition_requested; then
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_port_transition_stage_one
+    if run_stage_one_port_transition_if_requested; then
         return
     fi
 
     case "${cutover_mode:-needs_stage_one}" in
     strict_ready_for_finalize)
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_strict_baseline_reapply "yes"
+        run_managed_cutover_action "run_strict_baseline_reapply" "committed_state" "yes"
         return
         ;;
     fully_hardened)
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_strict_baseline_reapply "no"
+        run_managed_cutover_action "run_strict_baseline_reapply" "committed_state" "no"
         return
         ;;
     esac
@@ -2565,23 +3123,16 @@ run_without_cutover_state() {
     collect_user_input
     detect_cutover_mode
 
-    if ssh_port_transition_requested; then
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_port_transition_stage_one
+    if run_stage_one_port_transition_if_requested; then
         return
     fi
 
     case "${cutover_mode:-needs_stage_one}" in
     strict_ready_for_finalize)
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_strict_baseline_reapply "yes"
+        run_managed_cutover_action "run_strict_baseline_reapply" "committed_state" "yes"
         ;;
     fully_hardened)
-        validate_cutover_state_alignment || return 1
-        validate_saved_cutover_cli_consistency || return 1
-        run_strict_baseline_reapply "no"
+        run_managed_cutover_action "run_strict_baseline_reapply" "committed_state" "no"
         ;;
     *)
         run_stage_one_after_input
@@ -2589,13 +3140,16 @@ run_without_cutover_state() {
     esac
 }
 
+###############################################################################
+# System Hardening Writers
+###############################################################################
+
 # Configure Suricata for IPS mode and include custom config
 configure_suricata() {
-    echo "Configuring Suricata for IPS mode with IPFW..."
-    ssh_ports_csv=$(managed_ssh_ports_for_generated_state)
+    say "Configuring Suricata for IPS mode with IPFW..."
+    ssh_ports_csv=$(compose_normalized_port_set "$ssh_port" "${port_transition_old_port:-}")
     suricata_yaml_ports=$(suricata_ssh_ports_value "$ssh_ports_csv")
-    suricata_rule_ports=$(suricata_ssh_rule_ports_value "$ssh_ports_csv")
-    managed_ssh_rule="alert tcp any any -> any $suricata_rule_ports (msg:\"Managed SSH connection on staged ports $suricata_rule_ports\"; sid:1000001; rev:2;)"
+    managed_ssh_rule=$(managed_suricata_ssh_rule "$ssh_ports_csv")
     suricata_rules_tmp=""
 
     if ! render_template_file "config/suricata-custom.yaml.tmpl" "$suricata_custom_conf_file" \
@@ -2605,51 +3159,43 @@ configure_suricata() {
     fi
 
     if ! grep -qE '^[[:space:]]*SSH_PORTS:' "$suricata_conf_file"; then
-        echo "Error: SSH_PORTS not found in $suricata_conf_file."
+        error_msg "SSH_PORTS not found in $suricata_conf_file."
         return 1
     fi
-    atomic_sed_replace "$suricata_conf_file" -E "s|^([[:space:]]*SSH_PORTS:[[:space:]]*).*$|\\1$suricata_yaml_ports|"
-
-    # Append the custom configuration to the existing suricata.yaml using the `include` directive
-    if ! grep -q "^include: $suricata_custom_conf_file" "$suricata_conf_file"; then
-        echo "include: $suricata_custom_conf_file" >>"$suricata_conf_file"
-        echo "Custom Suricata configuration included."
-    else
-        echo "Custom Suricata configuration is already included."
+    suricata_conf_tmp=$(make_secure_tmp "$(dirname "$suricata_conf_file")")
+    if ! run_awk_template "$suricata_conf_file" "$suricata_conf_tmp" "$suricata_conf_file" "awk/suricata_ssh_ports_merge.awk" -v ssh_ports_value="$suricata_yaml_ports"; then
+        return 1
     fi
+    atomic_replace "$suricata_conf_file" "$suricata_conf_tmp"
+
+    suricata_conf_tmp=$(make_secure_tmp "$(dirname "$suricata_conf_file")")
+    if ! run_awk_template "$suricata_conf_file" "$suricata_conf_tmp" "$suricata_conf_file" "awk/suricata_include_merge.awk" -v custom_include="$suricata_custom_conf_file"; then
+        return 1
+    fi
+    atomic_replace "$suricata_conf_file" "$suricata_conf_tmp"
+    say "Custom Suricata configuration include normalized."
 
     [ -f "$suricata_rules_file" ] || : >"$suricata_rules_file"
     suricata_rules_tmp=$(make_secure_tmp "$(dirname "$suricata_rules_file")")
-    awk -v managed_rule="$managed_ssh_rule" '
-        /sid:1000001;/ {
-            if (!replaced) {
-                print managed_rule
-                replaced = 1
-            }
-            next
-        }
-        { print }
-        END {
-            if (!replaced) {
-                print managed_rule
-            }
-        }
-    ' "$suricata_rules_file" >"$suricata_rules_tmp" || {
-        rm -f "$suricata_rules_tmp"
+    if ! run_awk_template "$suricata_rules_file" "$suricata_rules_tmp" "$suricata_rules_file" "awk/suricata_rule_merge.awk" -v managed_rule="$managed_ssh_rule"; then
         return 1
-    }
+    fi
     atomic_replace "$suricata_rules_file" "$suricata_rules_tmp"
 
     # Test the Suricata configuration
     if ! suricata -T -c "$suricata_conf_file"; then
-        echo "Suricata configuration test failed. Please review the configuration."
+        say_err "Suricata configuration test failed. Please review the configuration."
         return 1
     fi
 
     # Enable Suricata at boot
-    sysrc suricata_enable="YES"
-    echo "Suricata configured to enable at next reboot on interface $nat_if."
+    apply_sysrc_settings_block "$suricata_rc_conf_settings"
+    say "Suricata configured to enable at next reboot on interface $nat_if."
 }
+
+###############################################################################
+# Strict-State Convergence
+###############################################################################
 
 converge_strict_cutover_state() {
     clear_immutable_flags
@@ -2657,13 +3203,10 @@ converge_strict_cutover_state() {
     prepare_ssh_user_access
     configure_google_auth
     configure_ssh_pam
-    if ! apply_sshd_profile strict; then
-        return 1
-    fi
-    if ! reload_sshd_safe; then
-        return 1
-    fi
-    if ! admin_access_is_ready; then
+    apply_and_reload_sshd_profile strict || return 1
+    if ! { [ -n "${user-}" ] &&
+        validate_user "$user" >/dev/null 2>&1 &&
+        managed_admin_path_matches_state; }; then
         prepare_sudo_access || return 1
     fi
     assert_admin_access_ready
@@ -2685,29 +3228,28 @@ finalize_deferred_admin_fallback() {
 
 # Configure Fail2Ban to protect SSH
 configure_fail2ban() {
-    echo "Configuring Fail2Ban to protect SSH and add manual permanent ban jail..."
+    say "Configuring Fail2Ban to protect SSH and add manual permanent ban jail..."
 
-    echo "Creating Fail2Ban jail.local for SSH and manual bans..."
+    say "Creating Fail2Ban jail.local for SSH and manual bans..."
     if ! render_template_file "config/fail2ban-jail.local.tmpl" "/usr/local/etc/fail2ban/jail.local"; then
         return 1
     fi
 
     # Enable Fail2Ban service
-    echo "Enabling Fail2Ban service..."
-    sysrc fail2ban_enable="YES"
+    say "Enabling Fail2Ban service..."
+    apply_sysrc_settings_block "$fail2ban_rc_conf_settings"
 
-    echo "Fail2Ban configuration completed. Restart the service to apply changes."
+    say "Fail2Ban configuration completed. Restart the service to apply changes."
 }
 
 # Harden system kernel with sysctl settings
 harden_sysctl() {
-    echo "Applying sysctl hardening..."
+    say "Applying sysctl hardening..."
     sysctl_conf="/etc/sysctl.conf"
-    set_default_if_empty "allow_multicast" "no"
-    set_default_if_empty "allow_multicast_legacy" "no"
+    resolve_runtime_defaults
 
     multicast_legacy_value=0
-    if [ "$allow_multicast" = "yes" ] && [ "$allow_multicast_legacy" = "yes" ]; then
+    if value_is_yes "$allow_multicast" && value_is_yes "$allow_multicast_legacy"; then
         multicast_legacy_value=1
     fi
 
@@ -2776,44 +3318,51 @@ EOF
                 fi
             fi
         else
-            echo "Warning: sysctl key '${key}' does not exist on this system."
+            warn_msg "sysctl key '${key}' does not exist on this system."
         fi
     done
 
-    echo "System kernel hardened with secure sysctl settings."
+    say "System kernel hardened with secure sysctl settings."
 }
 
 # Harden loader.conf with additional kernel security modules
 harden_loader_conf() {
-    echo "Configuring loader.conf for additional kernel security and microcode..."
+    say "Configuring loader.conf for additional kernel security and microcode..."
 
-    # Define the loader.conf values to be set for security modules
-    settings=$(emit_yes_settings "mac_bsdextended_load mac_portacl_load mac_seeotheruids_load")
+    settings=$(freebsd_true_setting "mac_bsdextended_load")
+    settings=$(append_line_block "$settings" "$(freebsd_true_setting "mac_portacl_load")")
+    settings=$(append_line_block "$settings" "$(freebsd_true_setting "mac_seeotheruids_load")")
 
-    # Add CPU microcode settings to loader.conf if detected
     if [ "$cpu_type" != "unknown" ]; then
-        microcode_settings=$(emit_yes_settings "cpuctl_load cpu_microcode_load")
         if [ "$cpu_type" = "intel" ]; then
-            microcode_settings=$(append_setting_line "$microcode_settings" "$(emit_yes_settings "coretemp_load")")
-            microcode_settings=$(append_setting_line "$microcode_settings" 'cpu_microcode_name="/boot/firmware/intel-ucode.bin"')
+            microcode_settings=$(freebsd_true_setting "cpuctl_load")
+            microcode_settings=$(append_line_block "$microcode_settings" "$(freebsd_true_setting "cpu_microcode_load")")
+            microcode_settings=$(append_line_block "$microcode_settings" "$(freebsd_true_setting "coretemp_load")")
+            microcode_settings=$(append_line_block "$microcode_settings" "$(quoted_setting_line "cpu_microcode_name" "/boot/firmware/intel-ucode.bin")")
         elif [ "$cpu_type" = "amd" ]; then
-            microcode_settings=$(append_setting_line "$microcode_settings" "$(emit_yes_settings "amdtemp_load")")
-            microcode_settings=$(append_setting_line "$microcode_settings" 'cpu_microcode_name="/boot/firmware/amd-ucode.bin"')
+            microcode_settings=$(freebsd_true_setting "cpuctl_load")
+            microcode_settings=$(append_line_block "$microcode_settings" "$(freebsd_true_setting "cpu_microcode_load")")
+            microcode_settings=$(append_line_block "$microcode_settings" "$(freebsd_true_setting "amdtemp_load")")
+            microcode_settings=$(append_line_block "$microcode_settings" "$(quoted_setting_line "cpu_microcode_name" "/boot/firmware/amd-ucode.bin")")
         fi
-        settings=$(append_setting_line "$settings" "$microcode_settings")
+        settings=$(append_line_block "$settings" "${microcode_settings-}")
     fi
 
+    loader_updates=""
     for setting in $settings; do
         key="${setting%%=*}"
 
         # Determine if the entry is a loadable module
-        if echo "$key" | grep -qF "_load"; then
+        case "$key" in
+        *_load)
             module="${key%_load}"
             module_path="/boot/kernel/${module}.ko"
             module_alt_path="/boot/modules/${module}.ko"
-        else
+            ;;
+        *)
             module="not_a_module"
-        fi
+            ;;
+        esac
 
         # Special case for cpu_microcode_load
         if [ "$module" = "cpu_microcode" ]; then
@@ -2833,20 +3382,20 @@ harden_loader_conf() {
 
                 # Attempt to load the kernel module
                 if kldstat -q -m "$module"; then
-                    echo "Module '${module}' already loaded."
+                    say "Module '${module}' already loaded."
                 elif [ "$module" != "ipfw" ] && [ "$module" != "ipfw_nat" ]; then
                     if kldload "$module" 2>/dev/null; then
-                        echo "Module '${module}' successfully loaded."
+                        say "Module '${module}' successfully loaded."
                     else
-                        echo "Warning: Failed to load kernel module '${module}'."
+                        warn_msg "Failed to load kernel module '${module}'."
                         continue
                     fi
                 fi
             fi
 
-            loader_updates=$(append_setting_line "$loader_updates" "$setting")
+            loader_updates=$(append_line_block "$loader_updates" "$setting")
         else
-            echo "Warning: Kernel module '${module}' not found in /boot/kernel/ or /boot/modules/"
+            warn_msg "Kernel module '${module}' not found in /boot/kernel/ or /boot/modules/"
         fi
     done
 
@@ -2856,39 +3405,38 @@ harden_loader_conf() {
         fi
     fi
 
-    echo "loader.conf hardened with additional kernel security modules and microcode settings."
+    say "loader.conf hardened with additional kernel security modules and microcode settings."
 }
 
 configure_firewall_boot() {
-    echo "Configuring firewall boot handling..."
+    say "Configuring firewall boot handling..."
     firewall_loader_settings=$(build_firewall_loader_settings)
 
     if ! apply_settings_merge_template "$loader_conf_file" "awk/kv_settings_merge.awk" "$firewall_loader_settings" -v append_missing="yes"; then
         return 1
     fi
 
-    if [ "$install_suricata" = "yes" ]; then
+    if suricata_requested; then
         configure_suricata || return 1
     fi
 
     configure_ipfw || return 1
-    echo "Firewall boot configuration committed. Future reboots will use the managed firewall configuration."
+    say "Firewall boot configuration committed. Future reboots will use the managed firewall configuration."
 }
 
 # Set securelevel in rc.conf
 configure_securelevel() {
-    echo "Configuring securelevel in rc.conf..."
-    sysrc kern_securelevel_enable="YES"
-    sysrc kern_securelevel="1"
-    echo "Securelevel configured in rc.conf."
+    say "Configuring securelevel in rc.conf..."
+    apply_sysrc_settings_block "$securelevel_rc_conf_settings"
+    say "Securelevel configured in rc.conf."
 }
 
 harden_ttys() {
-    echo "Hardening /etc/ttys for console password requirement and disabling extra VTs..."
+    say "Hardening /etc/ttys for console password requirement and disabling extra VTs..."
     ttys_conf="/etc/ttys"
 
     if [ ! -f "$ttys_conf" ]; then
-        echo "Warning: $ttys_conf not found; skipping."
+        warn_msg "$ttys_conf not found; skipping."
         return 0
     fi
     ttys_tmp=$(make_secure_tmp "$(dirname "$ttys_conf")")
@@ -2898,31 +3446,32 @@ harden_ttys() {
     fi
 
     if ! awk -f "$(template_path "awk/ttys_validate.awk")" "$ttys_tmp"; then
-        echo "Error: Validation failed for $ttys_tmp."
+        error_msg "Validation failed for $ttys_tmp."
         rm "$ttys_tmp"
         return 1
     fi
 
     atomic_replace "$ttys_conf" "$ttys_tmp"
-    echo "Hardened /etc/ttys and disabled VTs."
+    say "Hardened /etc/ttys and disabled VTs."
 }
 
 # Set Blowfish password hashing, enforce password expiration, and configure umask
 configure_password_and_umask() {
-    echo "Configuring password security with Blowfish encryption and setting a secure umask..."
+    say "Configuring password security with Blowfish encryption and setting a secure umask..."
     login_conf="/etc/login.conf"
+    password_expiration_value=$(resolve_password_expiration_value)
 
     # Check if the 'default' block exists
     if ! grep -q '^default:' "$login_conf"; then
-        echo "Error: 'default:' block not found in $login_conf. Cannot proceed."
+        error_msg "'default:' block not found in $login_conf. Cannot proceed."
         return 1
     fi
     login_conf_tmp=$(make_secure_tmp "$(dirname "$login_conf")")
 
     # Check if Blowfish hashing is already enabled
-    blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' "$login_conf" && echo 1 || echo 0)
+    blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' "$login_conf" && printf '1' || printf '0')
 
-    if ! run_awk_template "$login_conf" "$login_conf_tmp" "$login_conf" "awk/login_conf_defaults.awk" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_exp:-none}"; then
+    if ! run_awk_template "$login_conf" "$login_conf_tmp" "$login_conf" "awk/login_conf_defaults.awk" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="$password_expiration_value"; then
         return 1
     fi
 
@@ -2931,37 +3480,37 @@ configure_password_and_umask() {
 
     # Rebuild login capabilities database
     if ! cap_mkdb "$login_conf"; then
-        echo "Error: Failed to rebuild the login.conf database."
+        error_msg "Failed to rebuild the login.conf database."
         return 1
     fi
 
     # Check if Blowfish hashing needs to be enabled
     if [ "$blf_enabled" -ne 1 ]; then
         # Inform the user about the password reset
-        echo "Resetting the password for $user and root to ensure Blowfish encryption is applied."
+        say "Resetting the password for $user and root to ensure Blowfish encryption is applied."
 
         # Reset the password for the SSH user to apply Blowfish hashing
         if ! passwd "$user"; then
-            echo "Error: Failed to reset password for $user."
+            error_msg "Failed to reset password for $user."
             return 1
         fi
 
         # Reset the password for the root user to apply Blowfish hashing
         if ! passwd; then
-            echo "Error: Failed to reset password for root."
+            error_msg "Failed to reset password for root."
             return 1
         fi
     fi
 
-    echo "Password security configured with umask 027 and Blowfish encryption for $user."
+    say "Password security configured with umask 027 and Blowfish encryption for $user."
 }
 
 # Configure IPFW firewall with updated rules
 configure_ipfw() {
-    echo "Configuring IPFW firewall with Suricata and Dummynet..."
+    say "Configuring IPFW firewall with Suricata and Dummynet..."
     ipfw_rules_tmp=""
 
-    settings=$(emit_kv_settings "$managed_ipfw_emit_vars")
+    settings=$(render_quoted_settings_block "$(settings_block_for_vars "$rendered_firewall_vars")")
 
     ipfw_rules_tmp=$(make_secure_tmp "$(dirname "$managed_ipfw_rules_file")")
     if ! cp "$source_ipfw_rules_file" "$ipfw_rules_tmp"; then
@@ -2974,29 +3523,32 @@ configure_ipfw() {
         return 1
     fi
 
+    if ! sh -n "$ipfw_rules_tmp"; then
+        error_msg "Rendered IPFW rules failed shell syntax validation."
+        rm -f "$ipfw_rules_tmp"
+        return 1
+    fi
+
     chmod 640 "$ipfw_rules_tmp"
     atomic_replace "$managed_ipfw_rules_file" "$ipfw_rules_tmp"
 
     # Set the firewall to load on boot and specify the rules file
-    sysrc firewall_enable="YES"
-    sysrc firewall_script="$managed_ipfw_rules_file"
-    sysrc firewall_logging="YES"
+    apply_sysrc_settings_block "$managed_firewall_rc_conf_settings"
 
-    echo "IPFW firewall with Suricata and Dummynet configured, rules saved to $managed_ipfw_rules_file, and enabled at boot."
+    say "IPFW firewall with Suricata and Dummynet configured, rules saved to $managed_ipfw_rules_file, and enabled at boot."
 }
 
 # Secure syslog and configure /tmp cleanup at startup
 secure_syslog_and_tmp() {
-    echo "Securing syslog and configuring /tmp cleanup at startup..."
-    sysrc syslogd_flags="-ss"
+    say "Securing syslog and configuring /tmp cleanup at startup..."
+    apply_sysrc_settings_block "$syslog_tmp_rc_conf_settings"
     service syslogd restart
-    sysrc clear_tmp_enable="YES"
-    echo "Syslog secured and /tmp cleanup configured."
+    say "Syslog secured and /tmp cleanup configured."
 }
 
 # Configure cron jobs for system updates and suricata-update
 configure_cron_updates() {
-    echo "Setting up automatic updates via cron for the root user..."
+    say "Setting up automatic updates via cron for the root user..."
 
     # Fetch the current root crontab
     current_crontab=$(crontab -l 2>/dev/null || true)
@@ -3013,30 +3565,30 @@ configure_cron_updates() {
     temp_crontab=$(mktemp /tmp/root_crontab.XXXXXX)
 
     # Write the existing crontab to the temporary file
-    echo "$current_crontab" >"$temp_crontab"
+    printf '%s\n' "$current_crontab" >"$temp_crontab"
 
     # Add Suricata update cron job if applicable
-    if [ "$install_suricata" = "yes" ] && ! echo "$current_crontab" | grep -qF "$suricata_cmd"; then
-        echo "$suricata_cron" >>"$temp_crontab"
-        echo "Added Suricata update cron job."
+    if suricata_requested && ! printf '%s\n' "$current_crontab" | grep -qF "$suricata_cmd"; then
+        printf '%s\n' "$suricata_cron" >>"$temp_crontab"
+        say "Added Suricata update cron job."
     else
-        echo "Suricata update cron job already exists or not applicable. Skipping..."
+        say "Suricata update cron job already exists or not applicable. Skipping..."
     fi
 
     # Add FreeBSD update cron job if not already present
-    if [ "$freebsd_update_supported" = "yes" ] && ! echo "$current_crontab" | grep -qF "$freebsd_update_cmd"; then
-        echo "$freebsd_update_cron" >>"$temp_crontab"
-        echo "Added FreeBSD update cron job."
+    if value_is_yes "$freebsd_update_supported" && ! printf '%s\n' "$current_crontab" | grep -qF "$freebsd_update_cmd"; then
+        printf '%s\n' "$freebsd_update_cron" >>"$temp_crontab"
+        say "Added FreeBSD update cron job."
     else
-        echo "FreeBSD update cron job already exists or not supported. Skipping..."
+        say "FreeBSD update cron job already exists or not supported. Skipping..."
     fi
 
     # Add pkg update cron job if not already present
-    if ! echo "$current_crontab" | grep -qF "$pkg_update_cmd"; then
-        echo "$pkg_update_cron" >>"$temp_crontab"
-        echo "Added pkg update cron job."
+    if ! printf '%s\n' "$current_crontab" | grep -qF "$pkg_update_cmd"; then
+        printf '%s\n' "$pkg_update_cron" >>"$temp_crontab"
+        say "Added pkg update cron job."
     else
-        echo "pkg update cron job already exists. Skipping..."
+        say "pkg update cron job already exists. Skipping..."
     fi
 
     # Install the updated crontab
@@ -3045,20 +3597,20 @@ configure_cron_updates() {
     # Clean up the temporary file
     rm "$temp_crontab"
 
-    echo "Cron jobs for system and Suricata updates configured for the root user."
+    say "Cron jobs for system and Suricata updates configured for the root user."
 }
 
 # Lock down sensitive system files
 lock_down_system() {
-    echo "Locking down critical system files..."
+    say "Locking down critical system files..."
     for file in $service_scheduler_files; do
-        echo "root" >"$file"
+        printf 'root\n' >"$file"
     done
     for file in $sensitive_files; do
         chmod o= "$file"
     done
     reapply_immutable_flags
-    echo "System files locked down and cron/at restricted to root only."
+    say "System files locked down and cron/at restricted to root only."
 }
 
 ###############################################################################

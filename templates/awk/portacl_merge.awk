@@ -23,6 +23,10 @@ function normalize_rules(s,    n, i, arr, out) {
 }
 
 BEGIN {
+    if (managed_rule == "" || root_uid == "") {
+        print "portacl_merge.awk requires -v managed_rule and -v root_uid" > "/dev/stderr"
+        exit 1
+    }
     found = 0
     malformed = 0
 }
