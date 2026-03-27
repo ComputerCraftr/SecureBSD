@@ -34,22 +34,22 @@ set_kv_defaults() {
 
 # Initialize user-configurable variables (can be set via flags or prompts)
 script_config_defaults="
-allowed_user=
-admin_ssh_port=
-admin_ipv4=
-admin_ipv6=
+user=
+ssh_port=
+ssh_ipv4=
+ssh_ipv6=
 log_ssh_hits=
 log_wan_tcp_hits=
 allow_multicast=
 allow_multicast_legacy=
-internal_interface=
-nat_interface=
-tunnel_interface=
-install_auditing_tools=
+internal_if=
+nat_if=
+tun_if=
+install_auditing=
 install_microcode=
 install_suricata=
 suricata_port=
-password_expiration=
+password_exp=
 cpu_type=unknown
 "
 set_kv_defaults "$script_config_defaults"
@@ -112,7 +112,7 @@ validate_optional_interface() {
     [ -z "$value" ] || [ "$value" = "none" ] || validate_interface "$value"
 }
 
-normalize_admin_ip_list() {
+normalize_ssh_ip_list() {
     value="$1"
     family="$2"
 
@@ -262,6 +262,17 @@ run_awk_template() {
     fi
 }
 
+write_temp_content() {
+    content="$1"
+    tmp_file=$(make_secure_tmp)
+    if ! printf "%s" "$content" >"$tmp_file"; then
+        echo "Error: Failed to write temporary content file."
+        rm -f "$tmp_file"
+        return 1
+    fi
+    printf "%s\n" "$tmp_file"
+}
+
 render_template_file() {
     template_rel="$1"
     target="$2"
@@ -305,18 +316,74 @@ render_template_file() {
 apply_kv_settings_file() {
     target_file="$1"
     settings="$2"
+    append_missing="${3:-no}"
+
+    apply_settings_merge_template "$target_file" "awk/kv_settings_merge.awk" "$settings" -v append_missing="$append_missing"
+}
+
+apply_settings_merge_template() {
+    target_file="$1"
+    template_rel="$2"
+    settings="$3"
+    shift 3
 
     if [ ! -f "$target_file" ]; then
         echo "Error: $target_file not found."
         return 1
     fi
 
-    for setting in $settings; do
-        key="${setting%%=*}"
-        if grep -q "^${key}=" "$target_file"; then
-            atomic_sed_replace "$target_file" "s|^${key}=.*|${setting}|"
-        fi
+    tmp_file=$(make_secure_tmp "$(dirname "$target_file")")
+    settings_file=$(write_temp_content "$settings") || {
+        rm -f "$tmp_file"
+        return 1
+    }
+    if ! run_awk_template "$target_file" "$tmp_file" "$target_file" "$template_rel" -v settings_file="$settings_file" "$@"; then
+        rm -f "$settings_file"
+        return 1
+    fi
+    rm -f "$settings_file"
+    atomic_replace "$target_file" "$tmp_file"
+}
+
+emit_kv_settings() {
+    var_list=$1
+    old_ifs=$IFS
+    IFS=' '
+    for var_name in $var_list; do
+        eval "var_value=\${$var_name}"
+        printf '%s="%s"\n' "$var_name" "${var_value-}"
     done
+    IFS=$old_ifs
+}
+
+emit_field_settings() {
+    field_list=$1
+    old_ifs=$IFS
+    IFS='
+'
+    for entry in $field_list; do
+        [ -n "$entry" ] || continue
+        key=${entry%%=*}
+        value=${entry#*=}
+        printf '%s %s\n' "$key" "$value"
+    done
+    IFS=$old_ifs
+}
+
+append_setting_line() {
+    settings_block=$1
+    setting_line=$2
+    if [ -n "$settings_block" ]; then
+        printf '%s\n%s\n' "$settings_block" "$setting_line"
+    else
+        printf '%s\n' "$setting_line"
+    fi
+}
+
+set_default_if_empty() {
+    var_name=$1
+    default_value=$2
+    eval "[ -n \"\${$var_name-}\" ] || $var_name=\$default_value"
 }
 
 usage() {
@@ -351,87 +418,34 @@ EOF
     exit "$exit_code"
 }
 
+normalize_option_name() {
+    case "$1" in
+    -u | --user)
+        printf "%s\n" "user"
+        ;;
+    -p | --ssh-port)
+        printf "%s\n" "ssh_port"
+        ;;
+    --*)
+        printf "%s\n" "${1#--}" | tr '-' '_'
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+set_option_value() {
+    option_name=$(normalize_option_name "$1") || return 1
+    eval "$option_name=\$2"
+}
+
 parse_arguments() {
     while [ $# -gt 0 ]; do
         case "$1" in
-        -u | --user)
+        -u | --user | -p | --ssh-port | --ssh-ipv4 | --ssh-ipv6 | --log-ssh-hits | --log-wan-tcp-hits | --allow-multicast | --allow-multicast-legacy | --internal-if | --nat-if | --tunnel-if | --install-auditing | --install-microcode | --install-suricata | --suricata-port | --password-exp)
             [ $# -ge 2 ] || usage 2
-            allowed_user="$2"
-            shift 2
-            ;;
-        -p | --ssh-port)
-            [ $# -ge 2 ] || usage 2
-            admin_ssh_port="$2"
-            shift 2
-            ;;
-        --ssh-ipv4)
-            [ $# -ge 2 ] || usage 2
-            admin_ipv4="$2"
-            shift 2
-            ;;
-        --ssh-ipv6)
-            [ $# -ge 2 ] || usage 2
-            admin_ipv6="$2"
-            shift 2
-            ;;
-        --log-ssh-hits)
-            [ $# -ge 2 ] || usage 2
-            log_ssh_hits="$2"
-            shift 2
-            ;;
-        --log-wan-tcp-hits)
-            [ $# -ge 2 ] || usage 2
-            log_wan_tcp_hits="$2"
-            shift 2
-            ;;
-        --allow-multicast)
-            [ $# -ge 2 ] || usage 2
-            allow_multicast="$2"
-            shift 2
-            ;;
-        --allow-multicast-legacy)
-            [ $# -ge 2 ] || usage 2
-            allow_multicast_legacy="$2"
-            shift 2
-            ;;
-        --internal-if)
-            [ $# -ge 2 ] || usage 2
-            internal_interface="$2"
-            shift 2
-            ;;
-        --nat-if)
-            [ $# -ge 2 ] || usage 2
-            nat_interface="$2"
-            shift 2
-            ;;
-        --tunnel-if)
-            [ $# -ge 2 ] || usage 2
-            tunnel_interface="$2"
-            shift 2
-            ;;
-        --install-auditing)
-            [ $# -ge 2 ] || usage 2
-            install_auditing_tools="$2"
-            shift 2
-            ;;
-        --install-microcode)
-            [ $# -ge 2 ] || usage 2
-            install_microcode="$2"
-            shift 2
-            ;;
-        --install-suricata)
-            [ $# -ge 2 ] || usage 2
-            install_suricata="$2"
-            shift 2
-            ;;
-        --suricata-port)
-            [ $# -ge 2 ] || usage 2
-            suricata_port="$2"
-            shift 2
-            ;;
-        --password-exp)
-            [ $# -ge 2 ] || usage 2
-            password_expiration="$2"
+            set_option_value "$1" "$2" || usage 2
             shift 2
             ;;
         -h | --help)
@@ -445,44 +459,46 @@ parse_arguments() {
     done
 
     # Validate arguments provided via flags
-    if [ -n "$allowed_user" ]; then
-        validate_user "$allowed_user" || usage 2
+    if [ -n "$user" ]; then
+        validate_user "$user" || usage 2
     fi
-    if [ -n "$admin_ssh_port" ]; then
-        validate_port "$admin_ssh_port" || usage 2
+    if [ -n "$ssh_port" ]; then
+        validate_port "$ssh_port" || usage 2
     fi
-    if [ -n "$admin_ipv4" ]; then
-        admin_ipv4=$(normalize_admin_ip_list "$admin_ipv4" ipv4) || {
-            echo "Invalid IPv4 list '$admin_ipv4'. Use comma-separated IPv4 addresses or 'any'."
+    if [ -n "$ssh_ipv4" ]; then
+        normalized_ssh_ipv4=$(normalize_ssh_ip_list "$ssh_ipv4" ipv4) || {
+            echo "Invalid IPv4 list '$ssh_ipv4'. Use comma-separated IPv4 addresses or 'any'."
             usage 2
         }
+        ssh_ipv4="$normalized_ssh_ipv4"
     fi
-    if [ -n "$admin_ipv6" ]; then
-        admin_ipv6=$(normalize_admin_ip_list "$admin_ipv6" ipv6) || {
-            echo "Invalid IPv6 list '$admin_ipv6'. Use comma-separated IPv6 addresses or 'any'."
+    if [ -n "$ssh_ipv6" ]; then
+        normalized_ssh_ipv6=$(normalize_ssh_ip_list "$ssh_ipv6" ipv6) || {
+            echo "Invalid IPv6 list '$ssh_ipv6'. Use comma-separated IPv6 addresses or 'any'."
             usage 2
         }
+        ssh_ipv6="$normalized_ssh_ipv6"
     fi
-    validate_optional_yes_no "$log_ssh_hits" "--log-ssh-hits" || usage 2
-    validate_optional_yes_no "$log_wan_tcp_hits" "--log-wan-tcp-hits" || usage 2
-    validate_optional_yes_no "$allow_multicast" "--allow-multicast" || usage 2
-    validate_optional_yes_no "$allow_multicast_legacy" "--allow-multicast-legacy" || usage 2
+    validate_optional_yes_no "${log_ssh_hits-}" "--log-ssh-hits" || usage 2
+    validate_optional_yes_no "${log_wan_tcp_hits-}" "--log-wan-tcp-hits" || usage 2
+    validate_optional_yes_no "${allow_multicast-}" "--allow-multicast" || usage 2
+    validate_optional_yes_no "${allow_multicast_legacy-}" "--allow-multicast-legacy" || usage 2
     if [ "${allow_multicast_legacy:-no}" = "yes" ] && [ "${allow_multicast:-no}" != "yes" ]; then
         echo "--allow-multicast-legacy yes requires --allow-multicast yes."
         usage 2
     fi
-    validate_optional_interface "$internal_interface" || usage 2
-    validate_optional_interface "$nat_interface" || usage 2
-    validate_optional_interface "$tunnel_interface" || usage 2
-    validate_optional_yes_no "$install_auditing_tools" "--install-auditing" || usage 2
-    validate_optional_yes_no "$install_microcode" "--install-microcode" || usage 2
-    validate_optional_yes_no "$install_suricata" "--install-suricata" || usage 2
+    validate_optional_interface "${internal_if-}" || usage 2
+    validate_optional_interface "${nat_if-}" || usage 2
+    validate_optional_interface "${tun_if-}" || usage 2
+    validate_optional_yes_no "${install_auditing-}" "--install-auditing" || usage 2
+    validate_optional_yes_no "${install_microcode-}" "--install-microcode" || usage 2
+    validate_optional_yes_no "${install_suricata-}" "--install-suricata" || usage 2
     if [ -n "$suricata_port" ]; then
         validate_port "$suricata_port" || usage 2
     fi
-    if [ -n "$password_expiration" ] && [ "$password_expiration" != "none" ]; then
-        validate_password_expiration "$password_expiration" || usage 2
-        password_expiration="${password_expiration}d"
+    if [ -n "$password_exp" ] && [ "$password_exp" != "none" ]; then
+        validate_password_expiration "$password_exp" || usage 2
+        password_exp="${password_exp}d"
     fi
 }
 
@@ -538,54 +554,56 @@ reapply_immutable_flags() {
 collect_user_input() {
     echo "This script will harden your FreeBSD system by securing SSH, enabling firewall rules, configuring automatic updates, and more."
 
-    # SSH allowed user input
-    if [ -z "$allowed_user" ]; then
+    # SSH user input
+    if [ -z "$user" ]; then
         echo "Enter a valid username for SSH access and sudo privileges."
         printf "Enter the username to allow for SSH access: "
-        read -r allowed_user
-        if ! validate_user "$allowed_user"; then
+        read -r user
+        if ! validate_user "$user"; then
             echo "Please provide a valid username."
             return 1
         fi
     else
-        echo "Using provided username: $allowed_user"
+        echo "Using provided username: $user"
     fi
 
     # SSH port input
-    if [ -z "$admin_ssh_port" ]; then
+    if [ -z "$ssh_port" ]; then
         echo "Choose a custom SSH port (not the default 22)."
         printf "Enter the SSH port to use (default: 2222): "
-        read -r admin_ssh_port
-        admin_ssh_port="${admin_ssh_port:-2222}"
-        validate_port "$admin_ssh_port" || return 1
+        read -r ssh_port
+        ssh_port="${ssh_port:-2222}"
+        validate_port "$ssh_port" || return 1
     else
-        echo "Using provided SSH port: $admin_ssh_port"
+        echo "Using provided SSH port: $ssh_port"
     fi
 
-    # Admin IPv4 input
-    if [ -z "$admin_ipv4" ]; then
+    # SSH IPv4 input
+    if [ -z "$ssh_ipv4" ]; then
         echo "Enter a comma-separated list of IPv4 addresses allowed to SSH into the server, or type 'any' to allow all IPv4 access (not recommended)."
-        printf "Enter the admin IPv4 addresses (comma-separated) for SSH access: "
-        read -r admin_ipv4
-        admin_ipv4=$(normalize_admin_ip_list "$admin_ipv4" ipv4) || {
+        printf "Enter the SSH IPv4 addresses (comma-separated) for SSH access: "
+        read -r ssh_ipv4
+        normalized_ssh_ipv4=$(normalize_ssh_ip_list "$ssh_ipv4" ipv4) || {
             echo "Invalid input. Please enter comma-separated IPv4 addresses or 'any'."
             return 1
         }
+        ssh_ipv4="$normalized_ssh_ipv4"
     else
-        echo "Using provided SSH IPv4 list: $admin_ipv4"
+        echo "Using provided SSH IPv4 list: $ssh_ipv4"
     fi
 
-    # Admin IPv6 input
-    if [ -z "$admin_ipv6" ]; then
+    # SSH IPv6 input
+    if [ -z "$ssh_ipv6" ]; then
         echo "Enter a comma-separated list of IPv6 addresses allowed to SSH into the server, or type 'any' to allow all IPv6 access (not recommended)."
-        printf "Enter the admin IPv6 addresses (comma-separated) for SSH access: "
-        read -r admin_ipv6
-        admin_ipv6=$(normalize_admin_ip_list "$admin_ipv6" ipv6) || {
+        printf "Enter the SSH IPv6 addresses (comma-separated) for SSH access: "
+        read -r ssh_ipv6
+        normalized_ssh_ipv6=$(normalize_ssh_ip_list "$ssh_ipv6" ipv6) || {
             echo "Invalid input. Please enter comma-separated IPv6 addresses or 'any'."
             return 1
         }
+        ssh_ipv6="$normalized_ssh_ipv6"
     else
-        echo "Using provided SSH IPv6 list: $admin_ipv6"
+        echo "Using provided SSH IPv6 list: $ssh_ipv6"
     fi
 
     prompt_yes_no_default "log_ssh_hits" "Enable SSH SYN count/log rules for firewall debugging? (yes/no)" "no" "--log-ssh-hits" || return 1
@@ -595,31 +613,31 @@ collect_user_input() {
         prompt_yes_no_default \
             "allow_multicast_legacy" \
             "Allow legacy multicast compatibility (IGMPv1, IGMPv2, MLDv1)? (yes/no)" \
-            "no" \
-            "--allow-multicast-legacy" || return 1
+        "no" \
+        "--allow-multicast-legacy" || return 1
     else
         allow_multicast_legacy="no"
     fi
 
     # Interface selection for firewall policy and optional Suricata netmap support
     prompt_optional_interface \
-        "internal_interface" \
+        "internal_if" \
         "Set the internal network interface for IPFW. Type 'none' if not using a gateway/bridge (default: none)." \
         "internal network interface (e.g., bridge0)" \
         "internal interface" \
         "install_suricata" || return 1
     prompt_optional_interface \
-        "nat_interface" \
+        "nat_if" \
         "Set the IPv4 VPN/bootstrap egress interface for IPFW. Type 'none' if not using a VPN bootstrap path (default: none)." \
         "IPv4 VPN/bootstrap egress interface (e.g., tun0)" \
-        "NAT interface" || return 1
+        "IPv4 VPN/bootstrap interface" || return 1
     prompt_optional_interface \
-        "tunnel_interface" \
+        "tun_if" \
         "Set the protected IPv6-over-VPN interface for IPFW. This can be the main VPN interface or a 6in4 interface such as gif0 when it runs inside the IPv4 VPN. Type 'none' if not using one (default: none)." \
         "protected IPv6-over-VPN interface (e.g., tun0, gif0)" \
-        "tunnel interface" || return 1
+        "protected tunnel interface" || return 1
 
-    prompt_yes_no_default "install_auditing_tools" "Do you want to install security auditing tools? (yes/no)" "yes" "--install-auditing" || return 1
+    prompt_yes_no_default "install_auditing" "Do you want to install security auditing tools? (yes/no)" "yes" "--install-auditing" || return 1
     prompt_yes_no_default "install_microcode" "Would you like to install CPU microcode for your processor to enhance security? (yes/no)" "yes" "--install-microcode" || return 1
     if [ "$install_microcode" = "yes" ]; then
         cpu_info=$(sysctl -n hw.model | tr '[:upper:]' '[:lower:]')
@@ -635,23 +653,21 @@ collect_user_input() {
     # Suricata installation choice
     prompt_yes_no_default "install_suricata" "Do you want to install and configure Suricata? (yes/no)" "no" "--install-suricata" || return 1
     if [ "$install_suricata" != "no" ]; then
-        if [ -z "$suricata_port" ]; then
-            suricata_port="${suricata_port:-8000}" # Define the divert port for IPFW to Suricata
-        fi
+        set_default_if_empty "suricata_port" "8000"
         validate_port "$suricata_port" || return 1
     else
         suricata_port="none"
     fi
 
     # Password expiration input
-    if [ -z "$password_expiration" ]; then
+    if [ -z "$password_exp" ]; then
         echo "Set the password expiration period in days. Type 'none' to disable expiration (not recommended)."
         printf "Enter the password expiration period in days (default: 120): "
-        read -r password_expiration
-        password_expiration="${password_expiration:-120}"
-        if [ "$password_expiration" != "none" ]; then
-            validate_password_expiration "$password_expiration" || return 1
-            password_expiration="${password_expiration}d"
+        read -r password_exp
+        set_default_if_empty "password_exp" "120"
+        if [ "$password_exp" != "none" ]; then
+            validate_password_expiration "$password_exp" || return 1
+            password_exp="${password_exp}d"
         fi
     fi
 }
@@ -682,7 +698,7 @@ update_and_install_packages() {
     pkg install -y sudo-rs anacron pam_google_authenticator py311-fail2ban
 
     # Install security auditing tools if the user opted in
-    if [ "$install_auditing_tools" = "yes" ]; then
+    if [ "$install_auditing" = "yes" ]; then
         pkg install -y lynis spectre-meltdown-checker
     else
         echo "Skipping auditing tools installation."
@@ -722,87 +738,54 @@ configure_ssh() {
     sshd_config="/etc/ssh/sshd_config"
 
     # Define SSH settings as key-value pairs
-    settings=$(
-        cat <<EOF
-PermitRootLogin no
-MaxAuthTries 3
-PasswordAuthentication no
-KbdInteractiveAuthentication yes
-PubkeyAuthentication yes
-UsePAM yes
-UseDNS no
-AuthenticationMethods publickey,keyboard-interactive
-AllowUsers $allowed_user
-Port $admin_ssh_port
-ClientAliveInterval 60
-ClientAliveCountMax 1
-EOF
-    )
+    settings=$(emit_field_settings "
+PermitRootLogin=no
+MaxAuthTries=3
+PasswordAuthentication=no
+KbdInteractiveAuthentication=yes
+PubkeyAuthentication=yes
+UsePAM=yes
+UseDNS=no
+AuthenticationMethods=publickey,keyboard-interactive
+AllowUsers=$user
+Port=$ssh_port
+ClientAliveInterval=60
+ClientAliveCountMax=1
+")
 
-    # Loop through each setting safely with line-by-line reading
-    echo "$settings" | while IFS= read -r setting; do
-        key=$(echo "$setting" | cut -d' ' -f1)
-        value=$(echo "$setting" | cut -d' ' -f2-)
-        # Skip empty lines
-        [ -z "$key" ] && continue
-        [ -z "$value" ] && continue
-
-        # Check if the setting exists (including commented ones)
-        if grep -q "^#\?${key} " "$sshd_config"; then
-            if [ "$key" = "AllowUsers" ]; then
-                # Ensure we only add user if not already in the list
-                if ! awk -v key="$key" -v value="$value" '
-                    $1 == key {
-                        for (i = 2; i <= NF; i++) {
-                            if ($i == value) {
-                                found = 1
-                                exit
-                            }
-                        }
-                    }
-                    END { exit found ? 0 : 1 }
-                ' "$sshd_config"; then
-                    atomic_sed_replace "$sshd_config" -E "s|^#?${key} (.*)|${setting} \1|"
-                fi
-            else
-                # Replace existing setting
-                atomic_sed_replace "$sshd_config" -E "s|^#?${key} .*|${setting}|"
-            fi
-        else
-            # Add the setting if it doesn't exist
-            echo "$setting" >>"$sshd_config"
-        fi
-    done
+    if ! apply_settings_merge_template "$sshd_config" "awk/sshd_settings_merge.awk" "$settings"; then
+        return 1
+    fi
 
     echo "SSH configured to require public key and Google Authenticator authentication and disconnect inactive sessions."
 
-    # Configure SSH keys for the allowed user
-    ssh_dir="/home/$allowed_user/.ssh"
+    # Configure SSH keys for the SSH user
+    ssh_dir="/home/$user/.ssh"
     ssh_key="$ssh_dir/id_ed25519"
     ssh_pub_key="${ssh_key}.pub"
     authorized_keys="$ssh_dir/authorized_keys"
 
     # Ensure .ssh directory exists with correct permissions
     if [ ! -d "$ssh_dir" ]; then
-        echo "Creating .ssh directory for $allowed_user..."
+        echo "Creating .ssh directory for $user..."
         mkdir -p "$ssh_dir"
     fi
 
     # Always enforce correct permissions on .ssh directory
     chmod 700 "$ssh_dir"
-    chown "$allowed_user:$allowed_user" "$ssh_dir"
+    chown "$user:$user" "$ssh_dir"
 
     # Check for any existing SSH key pairs in the .ssh directory
     if [ -f "$ssh_key" ] || [ -f "$ssh_pub_key" ]; then
-        echo "SSH key pair already exists for $allowed_user."
+        echo "SSH key pair already exists for $user."
     else
-        echo "No SSH key found for $allowed_user. Generating a new key pair..."
-        su - "$allowed_user" -c "ssh-keygen -t ed25519 -f $ssh_key -N '' -q"
+        echo "No SSH key found for $user. Generating a new key pair..."
+        su - "$user" -c "ssh-keygen -t ed25519 -f $ssh_key -N '' -q"
     fi
 
     # Set up authorized_keys
     if [ ! -f "$authorized_keys" ]; then
-        echo "Creating authorized_keys for $allowed_user..."
+        echo "Creating authorized_keys for $user..."
         if [ -f "$ssh_pub_key" ]; then
             cat "$ssh_pub_key" >"$authorized_keys"
         else
@@ -810,7 +793,7 @@ EOF
             return 1
         fi
     else
-        echo "authorized_keys already exists for $allowed_user. Checking if the public key is present..."
+        echo "authorized_keys already exists for $user. Checking if the public key is present..."
         # Extract key type and key value from the public key file
         key_type_and_value=$(awk '{print $1, $2}' "$ssh_pub_key")
         if ! grep -qF "$key_type_and_value" "$authorized_keys"; then
@@ -823,19 +806,19 @@ EOF
 
     # Always enforce correct permissions on authorized_keys
     chmod 600 "$authorized_keys"
-    chown "$allowed_user:$allowed_user" "$authorized_keys"
+    chown "$user:$user" "$authorized_keys"
 
     # Enforce correct permissions on all SSH key files
     if [ -f "$ssh_key" ]; then
         chmod 600 "$ssh_key"
-        chown "$allowed_user:$allowed_user" "$ssh_key"
+        chown "$user:$user" "$ssh_key"
     fi
     if [ -f "$ssh_pub_key" ]; then
         chmod 644 "$ssh_pub_key"
-        chown "$allowed_user:$allowed_user" "$ssh_pub_key"
+        chown "$user:$user" "$ssh_pub_key"
     fi
 
-    echo "Public key authentication enabled for $allowed_user."
+    echo "Public key authentication enabled for $user."
 
     # Provide clear instructions for private key management
     echo ""
@@ -879,19 +862,19 @@ configure_ssh_pam() {
     echo "Google Authenticator added to the auth section of PAM SSH configuration."
 }
 
-# Configure Google Authenticator TOTP for the allowed user
+# Configure Google Authenticator TOTP for the SSH user
 configure_google_auth() {
-    echo "Configuring Google Authenticator TOTP for the allowed user..."
+    echo "Configuring Google Authenticator TOTP for the SSH user..."
 
     # Define the configuration file path
-    ga_config="/home/$allowed_user/.google_authenticator"
+    ga_config="/home/$user/.google_authenticator"
 
-    # Run google-authenticator as the allowed user with secure options
-    su - "$allowed_user" -c "google-authenticator -t -d -r 3 -R 30 -W -s '$ga_config'"
+    # Run google-authenticator as the SSH user with secure options
+    su - "$user" -c "google-authenticator -t -d -r 3 -R 30 -W -s '$ga_config'"
 
     # Secure permissions on the .google_authenticator file
     chmod 600 "$ga_config"
-    chown "$allowed_user:$allowed_user" "$ga_config"
+    chown "$user:$user" "$ga_config"
 
     # Provide clear instructions for the user
     echo ""
@@ -910,7 +893,7 @@ configure_google_auth() {
     read -r _dummy_variable
 }
 
-# Configure sudo for the allowed user
+# Configure sudo for the SSH user
 configure_sudo() {
     echo "Configuring sudo for administrative users..."
 
@@ -926,16 +909,16 @@ configure_sudo() {
 
     printf "\nEnter additional usernames to add to the sudo group (comma-separated, leave blank to skip): "
     read -r users_to_add
-    users_to_add="${allowed_user},${users_to_add}"
+    users_to_add="${user},${users_to_add}"
 
     if [ -n "$users_to_add" ]; then
         users_added=""
         # Split input into individual usernames
-        for user in $(echo "$users_to_add" | tr ',' '\n'); do
-            user=$(echo "$user" | xargs) # Trim whitespace
-            if validate_user "$user"; then
-                pw groupmod sudo -m "$user"
-                users_added="${users_added}${user},"
+        for member_user in $(echo "$users_to_add" | tr ',' '\n'); do
+            member_user=$(echo "$member_user" | xargs) # Trim whitespace
+            if validate_user "$member_user"; then
+                pw groupmod sudo -m "$member_user"
+                users_added="${users_added}${member_user},"
             fi
         done
 
@@ -993,10 +976,10 @@ configure_sudo() {
     if [ "$remove_wheel_members" = "yes" ]; then
         users_removed=""
         echo "Removing non-root users from the wheel group..."
-        for user in $(getent group wheel | cut -d ':' -f 4 | tr ',' '\n'); do
-            if [ "$user" != "root" ] && [ -n "$user" ]; then
-                pw groupmod wheel -d "$user"
-                users_removed="${users_removed}${user},"
+        for wheel_user in $(getent group wheel | cut -d ':' -f 4 | tr ',' '\n'); do
+            if [ "$wheel_user" != "root" ] && [ -n "$wheel_user" ]; then
+                pw groupmod wheel -d "$wheel_user"
+                users_removed="${users_removed}${wheel_user},"
             fi
         done
 
@@ -1024,13 +1007,13 @@ configure_suricata() {
     suricata_rules="/var/lib/suricata/rules/custom.rules"
 
     if ! render_template_file "config/suricata-custom.yaml.tmpl" "$suricata_custom_conf" \
-        "@NAT_INTERFACE@=$nat_interface" \
+        "@NAT_INTERFACE@=$nat_if" \
         "@SURICATA_PORT@=$suricata_port"; then
         return 1
     fi
 
     # Update SSH port in suricata.yaml using sed to match single values or lists
-    atomic_sed_replace "$suricata_conf" -E "s/(SSH_PORTS: )([0-9]+|\\[[0-9, ]+\\])/\1$admin_ssh_port/"
+    atomic_sed_replace "$suricata_conf" -E "s/(SSH_PORTS: )([0-9]+|\\[[0-9, ]+\\])/\1$ssh_port/"
 
     # Append the custom configuration to the existing suricata.yaml using the `include` directive
     if ! grep -q "^include: $suricata_custom_conf" "$suricata_conf"; then
@@ -1041,8 +1024,8 @@ configure_suricata() {
     fi
 
     # Add custom Suricata rule for SSH port if not present
-    if ! grep -qF "port $admin_ssh_port" "$suricata_rules"; then
-        echo "alert tcp any any -> any $admin_ssh_port (msg:\"SSH connection on custom port $admin_ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
+    if ! grep -qF "port $ssh_port" "$suricata_rules"; then
+        echo "alert tcp any any -> any $ssh_port (msg:\"SSH connection on custom port $ssh_port\"; sid:1000001; rev:1;)" >>"$suricata_rules"
         echo "Custom SSH port rule added to Suricata."
     else
         echo "Custom SSH port rule already exists in Suricata."
@@ -1056,7 +1039,7 @@ configure_suricata() {
 
     # Enable Suricata at boot
     sysrc suricata_enable="YES"
-    echo "Suricata configured to enable at next reboot on interface $nat_interface."
+    echo "Suricata configured to enable at next reboot on interface $nat_if."
 }
 
 # Configure Fail2Ban to protect SSH
@@ -1080,18 +1063,16 @@ harden_sysctl() {
     echo "Applying sysctl hardening..."
     sysctl_conf="/etc/sysctl.conf"
 
-    multicast_sysctls='
-net.inet.igmp.legacysupp=0
-net.inet.igmp.v2enable=0
-net.inet.igmp.v1enable=0
-net.inet6.mld.v1enable=0'
+    multicast_legacy_value=0
     if [ "${allow_multicast:-no}" = "yes" ] && [ "${allow_multicast_legacy:-no}" = "yes" ]; then
-        multicast_sysctls='
-net.inet.igmp.legacysupp=1
-net.inet.igmp.v2enable=1
-net.inet.igmp.v1enable=1
-net.inet6.mld.v1enable=1'
+        multicast_legacy_value=1
     fi
+
+    multicast_sysctls='
+net.inet.igmp.legacysupp='"$multicast_legacy_value"'
+net.inet.igmp.v2enable='"$multicast_legacy_value"'
+net.inet.igmp.v1enable='"$multicast_legacy_value"'
+net.inet6.mld.v1enable='"$multicast_legacy_value"
 
     # Define the sysctl values to be set
     settings=$(
@@ -1124,7 +1105,7 @@ security.bsd.unprivileged_read_msgbuf=0
 security.bsd.unprivileged_proc_debug=0
 security.mac.bsdextended.logging=1
 security.mac.portacl.suser_exempt=1
-security.mac.portacl.rules=uid:$(id -u "root"):tcp:$admin_ssh_port
+security.mac.portacl.rules=uid:$(id -u "root"):tcp:$ssh_port
 security.mac.portacl.port_high=5000
 net.inet.ip.portrange.reservedlow=0
 net.inet.ip.portrange.reservedhigh=0
@@ -1135,6 +1116,7 @@ vm.pmap.allow_2m_x_ept=0
 EOF
     )
 
+    loader_updates=""
     for setting in $settings; do
         key="${setting%%=*}"
 
@@ -1164,67 +1146,36 @@ harden_loader_conf() {
     loader_conf="/boot/loader.conf"
 
     # Define the loader.conf values to be set for security modules
-    settings=$(
-        cat <<EOF
+    settings='
 mac_bsdextended_load="YES"
 mac_portacl_load="YES"
 mac_seeotheruids_load="YES"
 ipfw_load="YES"
-dummynet_load="YES"
-EOF
-    )
+dummynet_load="YES"'
 
-    # Load ipfw_nat when a NAT interface is configured for the firewall ruleset
-    if [ "$nat_interface" != "none" ]; then
-        settings=$(
-            cat <<EOF
-$settings
-ipfw_nat_load="YES"
-EOF
-        )
+    # Load ipfw_nat when an IPv4 VPN/bootstrap interface is configured for the firewall ruleset
+    if [ "$nat_if" != "none" ]; then
+        settings=$(append_setting_line "$settings" 'ipfw_nat_load="YES"')
     fi
 
     # Load ipdivert when Suricata divert processing is enabled
     if [ "$install_suricata" = "yes" ] && [ "$suricata_port" != "none" ]; then
-        settings=$(
-            cat <<EOF
-$settings
-ipdivert_load="YES"
-EOF
-        )
+        settings=$(append_setting_line "$settings" 'ipdivert_load="YES"')
     fi
 
     # Add CPU microcode settings to loader.conf if detected
     if [ "$cpu_type" != "unknown" ]; then
-        microcode_settings=$(
-            cat <<EOF
+        microcode_settings='
 cpuctl_load="YES"
-cpu_microcode_load="YES"
-EOF
-        )
+cpu_microcode_load="YES"'
         if [ "$cpu_type" = "intel" ]; then
-            microcode_settings=$(
-                cat <<EOF
-$microcode_settings
-coretemp_load="YES"
-cpu_microcode_name="/boot/firmware/intel-ucode.bin"
-EOF
-            )
+            microcode_settings=$(append_setting_line "$microcode_settings" 'coretemp_load="YES"')
+            microcode_settings=$(append_setting_line "$microcode_settings" 'cpu_microcode_name="/boot/firmware/intel-ucode.bin"')
         elif [ "$cpu_type" = "amd" ]; then
-            microcode_settings=$(
-                cat <<EOF
-$microcode_settings
-amdtemp_load="YES"
-cpu_microcode_name="/boot/firmware/amd-ucode.bin"
-EOF
-            )
+            microcode_settings=$(append_setting_line "$microcode_settings" 'amdtemp_load="YES"')
+            microcode_settings=$(append_setting_line "$microcode_settings" 'cpu_microcode_name="/boot/firmware/amd-ucode.bin"')
         fi
-        settings=$(
-            cat <<EOF
-$settings
-$microcode_settings
-EOF
-        )
+        settings=$(append_setting_line "$settings" "$microcode_settings")
     fi
 
     for setting in $settings; do
@@ -1268,16 +1219,17 @@ EOF
                 fi
             fi
 
-            # Update or append the loader.conf entry
-            if grep -q "^${key}=" "$loader_conf"; then
-                atomic_sed_replace "$loader_conf" "s|^${key}=.*|${setting}|"
-            else
-                echo "$setting" >>"$loader_conf"
-            fi
+            loader_updates=$(append_setting_line "$loader_updates" "$setting")
         else
             echo "Warning: Kernel module '${module}' not found in /boot/kernel/ or /boot/modules/"
         fi
     done
+
+    if [ -n "$loader_updates" ]; then
+        if ! apply_kv_settings_file "$loader_conf" "$loader_updates" "yes"; then
+            return 1
+        fi
+    fi
 
     echo "loader.conf hardened with additional kernel security modules and microcode settings."
 }
@@ -1329,7 +1281,7 @@ configure_password_and_umask() {
     # Check if Blowfish hashing is already enabled
     blf_enabled=$(grep -qE '^[[:blank:]]*:passwd_format=blf:' "$login_conf" && echo 1 || echo 0)
 
-    if ! run_awk_template "$login_conf" "$login_conf_tmp" "$login_conf" "awk/login_conf_defaults.awk" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_expiration:-none}"; then
+    if ! run_awk_template "$login_conf" "$login_conf_tmp" "$login_conf" "awk/login_conf_defaults.awk" -v new_passwd_format="blf" -v new_umask="027" -v password_expiration="${password_exp:-none}"; then
         return 1
     fi
 
@@ -1345,11 +1297,11 @@ configure_password_and_umask() {
     # Check if Blowfish hashing needs to be enabled
     if [ "$blf_enabled" -ne 1 ]; then
         # Inform the user about the password reset
-        echo "Resetting the password for $allowed_user and root to ensure Blowfish encryption is applied."
+        echo "Resetting the password for $user and root to ensure Blowfish encryption is applied."
 
-        # Reset the password for the allowed user to apply Blowfish hashing
-        if ! passwd "$allowed_user"; then
-            echo "Error: Failed to reset password for $allowed_user."
+        # Reset the password for the SSH user to apply Blowfish hashing
+        if ! passwd "$user"; then
+            echo "Error: Failed to reset password for $user."
             return 1
         fi
 
@@ -1360,7 +1312,7 @@ configure_password_and_umask() {
         fi
     fi
 
-    echo "Password security configured with umask 027 and Blowfish encryption for $allowed_user."
+    echo "Password security configured with umask 027 and Blowfish encryption for $user."
 }
 
 # Configure IPFW firewall with updated rules
@@ -1369,22 +1321,12 @@ configure_ipfw() {
     ipfw_rules="/etc/ipfw.rules"
     local_ipfw_rules="$script_dir/ipfw.rules"
 
-    # Define the ipfw.rules values to be set
-    settings=$(
-        cat <<EOF
-nat_if="$nat_interface"
-tun_if="$tunnel_interface"
-int_if="$internal_interface"
-suricata_divert_port="$suricata_port"
-ssh_ip4="$admin_ipv4"
-ssh_ip6="$admin_ipv6"
-ssh_tcp_port="$admin_ssh_port"
-log_ssh_hits="$log_ssh_hits"
-log_wan_tcp_hits="$log_wan_tcp_hits"
-allow_multicast="$allow_multicast"
-allow_multicast_legacy="$allow_multicast_legacy"
-EOF
-    )
+    settings=$(emit_kv_settings "
+nat_if tun_if internal_if suricata_port
+ssh_ipv4 ssh_ipv6 ssh_port
+log_ssh_hits log_wan_tcp_hits
+allow_multicast allow_multicast_legacy
+")
 
     if ! apply_kv_settings_file "$local_ipfw_rules" "$settings"; then
         return 1
